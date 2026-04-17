@@ -5,7 +5,7 @@ together with Android/iOS gyro logs, producing ready-to-use `.gyroflow`
 projects that can be loaded directly into Gyroflow Desktop or the
 Gyroflow OFX plugin for DaVinci Resolve.
 
-This tool is part of the **GyLog** ecosystem by [Kumo Inc.](https://kumost.com).
+This tool is part of the **GyLog** ecosystem by [Kumo Inc.](https://kumoinc.com).
 
 ## Features
 
@@ -54,4 +54,4 @@ Full dependency list with copyright and license details:
 
 ---
 
-© 2026 Kumo Inc. — contact: kumoincstudio [at] gmail.com
+© 2026 Kumo Inc. — contact via [GitHub Issues](https://github.com/kumost/gylogsync-direct/issues)

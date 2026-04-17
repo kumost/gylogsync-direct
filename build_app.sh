@@ -8,8 +8,17 @@ echo "=== Step 1: Building Rust bridge ==="
 bash build_rust.sh
 
 # 1. Build the Swift binaries in Release mode
+# Privacy: use debug-prefix-map so the compiled Mach-O does not embed
+# the builder's absolute home / source paths in debug info.
+SRC_DIR="$(pwd)"
 echo "=== Step 2: Building Swift app ==="
-swift build -c release
+swift build -c release \
+    -Xswiftc -Xfrontend -Xswiftc -debug-prefix-map \
+    -Xswiftc -Xfrontend -Xswiftc "${HOME}=/home" \
+    -Xswiftc -Xfrontend -Xswiftc -debug-prefix-map \
+    -Xswiftc -Xfrontend -Xswiftc "${SRC_DIR}=/source" \
+    -Xcc -fdebug-prefix-map="${HOME}=/home" \
+    -Xcc -fdebug-prefix-map="${SRC_DIR}=/source"
 
 # 2. Create App Bundle Structure
 BINARY_NAME="GyLogSync"
@@ -29,6 +38,13 @@ if [ -f "$HELPER_PATH" ]; then
     cp "$HELPER_PATH" "$APP_BUNDLE/Contents/MacOS/GyroflowSyncHelper"
     echo "Copied GyroflowSyncHelper"
 fi
+
+# Strip debug info and private symbols from both binaries to remove
+# any leftover host paths and reduce binary size.
+echo "Stripping debug symbols for privacy..."
+strip -S -x "$APP_BUNDLE/Contents/MacOS/$APP_NAME" 2>/dev/null || true
+[ -f "$APP_BUNDLE/Contents/MacOS/GyroflowSyncHelper" ] && \
+    strip -S -x "$APP_BUNDLE/Contents/MacOS/GyroflowSyncHelper" 2>/dev/null || true
 
 # 4. Copy Lens Profiles
 if [ -d "Resources/LensProfiles" ]; then
