@@ -1,0 +1,5 @@
+module CGyroflowBridge {
+    header "include/gyroflow_bridge.h"
+    link "gylogsync_bridge"
+    export *
+}

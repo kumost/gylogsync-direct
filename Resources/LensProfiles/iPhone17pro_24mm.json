@@ -1,0 +1,70 @@
+{
+  "name": "__24mm__C4k_1.40by1_4224x3024-60.00fps",
+  "note": "",
+  "calibrated_by": "Kst",
+  "camera_brand": "Apple",
+  "camera_model": "iPhone17pro",
+  "lens_model": "24mm",
+  "camera_setting": "",
+  "calib_dimension": {
+    "w": 4224,
+    "h": 3024
+  },
+  "orig_dimension": {
+    "w": 4224,
+    "h": 3024
+  },
+  "output_dimension": {
+    "w": 4224,
+    "h": 3024
+  },
+  "frame_readout_time": null,
+  "frame_readout_direction": null,
+  "gyro_lpf": null,
+  "input_horizontal_stretch": 1.0,
+  "input_vertical_stretch": 1.0,
+  "num_images": 8,
+  "fps": 60.0,
+  "crop": null,
+  "official": false,
+  "asymmetrical": false,
+  "fisheye_params": {
+    "RMS_error": 0.4567097274301936,
+    "camera_matrix": [
+      [
+        2842.030639353483,
+        0.0,
+        2110.7030693008933
+      ],
+      [
+        0.0,
+        2842.9114264552054,
+        1513.7937762397933
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "distortion_coeffs": [
+      0.5176580691825358,
+      0.08180817589042037,
+      -3.0221992597771723,
+      6.294358620457969
+    ],
+    "radial_distortion_limit": null
+  },
+  "identifier": "",
+  "calibrator_version": "1.6.3",
+  "date": "2026-01-20",
+  "compatible_settings": [],
+  "sync_settings": null,
+  "distortion_model": null,
+  "digital_lens": null,
+  "digital_lens_params": null,
+  "interpolations": null,
+  "focal_length": null,
+  "crop_factor": null,
+  "global_shutter": false
+}

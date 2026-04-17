@@ -1,0 +1,42 @@
+# Swift / macOS
+.DS_Store
+.build/
+.swiftpm/
+Package.resolved
+DerivedData/
+xcuserdata/
+
+# Xcode
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcscmblueprint
+*.moved-aside
+
+# Built app (user can rebuild locally)
+*.app/
+*.zip
+
+# Notarization
+*.dmg
+*.pkg
+
+# Build artifacts
+build/
+target/
+
+# Certificates / Secrets (NEVER commit)
+*.p12
+*.pem
+*.cer
+*.mobileprovision
+*.provisionprofile
+CertificationRequest.certSigningRequest
+*_key.pem
+
+# Logs
+*.log
+
+# Misc
+*.bak
