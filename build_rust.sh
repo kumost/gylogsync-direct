@@ -8,9 +8,15 @@ source "$HOME/.cargo/env"
 export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
 export FFMPEG_DIR="/opt/homebrew"
 
+# Privacy: strip absolute host paths from the resulting .a debug info.
+# Without this, cargo registry paths like /Users/<you>/.cargo/registry/...
+# would be baked into the binary and leak when distributed publicly.
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${HOME}/.cargo=/cargo --remap-path-prefix=${HOME}=/home --remap-path-prefix=$(pwd)=/source"
+
 cd "$(dirname "$0")/rust-bridge"
 
 echo "=== Building Rust bridge library ==="
+echo "RUSTFLAGS: $RUSTFLAGS"
 
 # Detect architecture
 ARCH=$(uname -m)
