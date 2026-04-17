@@ -42,9 +42,15 @@ the corresponding source code available under the same license.
 ## Acknowledgements
 
 - [Gyroflow](https://github.com/gyroflow/gyroflow) — the stabilization
-  engine this tool wraps
-- [OpenCV](https://opencv.org/) — used by `gyroflow-core` for optical
-  flow analysis
+  engine this tool wraps (GPL-3.0)
+- [OpenCV](https://opencv.org/) — optical flow analysis (Apache-2.0)
+- [Arm KleidiCV](https://gitlab.arm.com/kleidi/kleidicv) —
+  ARM-optimized image primitives (Apache-2.0)
+- [Intel oneTBB](https://github.com/uxlfoundation/oneTBB) —
+  parallelism framework (Apache-2.0)
+
+Full dependency list with copyright and license details:
+[`THIRD_PARTY_LICENSES.md`](./THIRD_PARTY_LICENSES.md)
 
 ---
 
