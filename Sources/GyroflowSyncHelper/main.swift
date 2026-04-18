@@ -1,7 +1,7 @@
 // main.swift (GyroflowSyncHelper)
 // Copyright (C) 2026 Kumo, Inc.
 // Licensed under the GNU General Public License v3.0
-// https://github.com/kumost/GyLogSync
+// https://github.com/kumost/gylogsync-direct
 
 // Single-video gyroflow sync helper - runs in subprocess for crash isolation
 // Usage: GyroflowSyncHelper <videoPath> <gcsvPath> <outputPath> [lensProfilePath] [initialOffsetMs] [searchSizeMs]
@@ -10,6 +10,30 @@
 import Foundation
 import AVFoundation
 import CGyroflowBridge
+
+// Scan a gcsv file's header for `install_angle:R{roll}_P{pitch}` and return
+// the parsed angle, or nil if not present. Reads only the leading header lines.
+func extractInstallAngle(fromGcsvAt path: String) -> (roll: Double, pitch: Double)? {
+    guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+    var header = ""
+    content.enumerateLines { line, stop in
+        if !line.isEmpty, let first = line.first, (first.isNumber || first == "-") {
+            stop = true
+        } else {
+            header += line + "\n"
+        }
+    }
+    let pattern = #"install_angle:R(-?\d+)_P(-?\d+)"#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: header, range: NSRange(header.startIndex..., in: header)),
+          match.numberOfRanges >= 3,
+          let rRange = Range(match.range(at: 1), in: header),
+          let pRange = Range(match.range(at: 2), in: header),
+          let roll = Double(header[rRange]),
+          let pitch = Double(header[pRange])
+    else { return nil }
+    return (roll, pitch)
+}
 
 guard CommandLine.arguments.count >= 4 else {
     fputs("Usage: GyroflowSyncHelper <videoPath> <gcsvPath> <outputPath> [lensProfilePath] [initialOffsetMs] [searchSizeMs]\n", stderr)
@@ -124,20 +148,36 @@ func run() async throws {
     check(gf_finish_sync(ctx, &errorPtr), "finish_sync")
     check(gf_export(ctx, outputPath, &errorPtr), "export")
 
-    // Embed per-frame PTS timestamps into .gyroflow file
-    // This allows OFX plugins to use exact frame timing instead of computing from fps
-    if !framePtsUs.isEmpty {
-        do {
-            let gyroflowData = try Data(contentsOf: URL(fileURLWithPath: outputPath))
-            if var json = try JSONSerialization.jsonObject(with: gyroflowData) as? [String: Any] {
+    // Embed per-frame PTS timestamps + install_angle rotation into .gyroflow file
+    // - frame_timestamps_us lets OFX plugins use exact frame timing instead of computing from fps
+    // - gyro_source.rotation carries the Android-side install_angle so Gyroflow opens
+    //   with Pitch/Roll pre-applied (mirrorless rig auto-leveling)
+    do {
+        let gyroflowData = try Data(contentsOf: URL(fileURLWithPath: outputPath))
+        if var json = try JSONSerialization.jsonObject(with: gyroflowData) as? [String: Any] {
+            var dirty = false
+
+            if !framePtsUs.isEmpty {
                 json["frame_timestamps_us"] = framePtsUs
-                let updatedData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
-                try updatedData.write(to: URL(fileURLWithPath: outputPath))
+                dirty = true
                 fputs("INFO: Embedded \(framePtsUs.count) frame timestamps\n", stderr)
             }
-        } catch {
-            fputs("WARNING: Failed to embed frame timestamps: \(error)\n", stderr)
+
+            if let angle = extractInstallAngle(fromGcsvAt: gcsvPath) {
+                var gyroSource = (json["gyro_source"] as? [String: Any]) ?? [:]
+                gyroSource["rotation"] = [angle.pitch, angle.roll, 0.0]
+                json["gyro_source"] = gyroSource
+                dirty = true
+                fputs("INFO: Applied install_angle R\(Int(angle.roll))_P\(Int(angle.pitch)) -> gyro_source.rotation\n", stderr)
+            }
+
+            if dirty {
+                let updatedData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+                try updatedData.write(to: URL(fileURLWithPath: outputPath))
+            }
         }
+    } catch {
+        fputs("WARNING: Failed to post-process .gyroflow: \(error)\n", stderr)
     }
 
     // Print result to stdout for parent to parse

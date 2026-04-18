@@ -1,7 +1,7 @@
 // GCSVParser.swift
 // Copyright (C) 2026 Kumo, Inc.
 // Licensed under the GNU General Public License v3.0
-// https://github.com/kumost/GyLogSync
+// https://github.com/kumost/gylogsync-direct
 
 import Foundation
 
@@ -65,5 +65,20 @@ class GCSVParser {
 
         content += samples.map { $0.rawLine }.joined(separator: "\n")
         try content.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    // Extract install_angle:R{roll}_P{pitch} from a gcsv header/note string.
+    // Returns nil if not present.
+    static func parseInstallAngle(fromHeader text: String) -> (roll: Double, pitch: Double)? {
+        let pattern = #"install_angle:R(-?\d+)_P(-?\d+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.numberOfRanges >= 3,
+              let rRange = Range(match.range(at: 1), in: text),
+              let pRange = Range(match.range(at: 2), in: text),
+              let roll = Double(text[rRange]),
+              let pitch = Double(text[pRange])
+        else { return nil }
+        return (roll, pitch)
     }
 }

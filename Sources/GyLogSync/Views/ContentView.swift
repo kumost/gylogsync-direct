@@ -1,7 +1,7 @@
 // ContentView.swift
 // Copyright (C) 2026 Kumo, Inc.
 // Licensed under the GNU General Public License v3.0
-// https://github.com/kumost/GyLogSync
+// https://github.com/kumost/gylogsync-direct
 
 import SwiftUI
 import UniformTypeIdentifiers
@@ -41,7 +41,7 @@ struct ContentView: View {
             }
         }
     }
-    @State private var selectedLens: LensOption = .lens24mm
+    @State private var selectedLens: LensOption = .none
 
     var body: some View {
         VStack(spacing: 0) {
@@ -434,6 +434,16 @@ struct ContentView: View {
                     syncSucceeded = true
                     await MainActor.run {
                         processedFiles.append("Gyroflow: \(gyroflowFileName)")
+                    }
+
+                    // Surface install_angle detection (auto-applied by helper into gyro_source.rotation)
+                    if let headerText = try? GCSVParser.getHeader(url: exportURL),
+                       let angle = GCSVParser.parseInstallAngle(fromHeader: headerText) {
+                        let rStr = String(format: "%+d", Int(angle.roll))
+                        let pStr = String(format: "%+d", Int(angle.pitch))
+                        await MainActor.run {
+                            processedFiles.append("Detected install angle: R\(rStr)° P\(pStr)° (auto-applied)")
+                        }
                     }
                 } catch {
                     print("Gyroflow subprocess sync failed: \(error), falling back to timestamp-based export")
