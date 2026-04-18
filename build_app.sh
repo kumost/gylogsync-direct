@@ -65,9 +65,9 @@ cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
     <key>CFBundleName</key>
     <string>$APP_NAME</string>
     <key>CFBundleShortVersionString</key>
-    <string>3.1</string>
+    <string>1.0</string>
     <key>CFBundleVersion</key>
-    <string>4</string>
+    <string>1</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -128,5 +128,5 @@ xcrun stapler staple "$APP_BUNDLE"
 # Clean up
 rm -f "$ZIP_NAME" entitlements.plist
 
-echo "=== Done! $APP_BUNDLE v3.1 is ready (signed + notarized). ==="
+echo "=== Done! $APP_BUNDLE v1.0-beta is ready (signed + notarized). ==="
 open .
