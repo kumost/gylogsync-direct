@@ -26,22 +26,12 @@ struct ContentView: View {
     // Audio processing option
     @State private var skipAudioProcessing = false
 
-    // Gyroflow processing options
-    @State private var gyroflowSearchSize: Double = 500
-
-    // Built-in lens profile options (iPhone 17 Pro)
-    enum LensOption: String, CaseIterable {
-        case lens24mm = "17 Pro - 24mm (Wide 1x)"
-        case none = "None (Manual)"
-
-        var filename: String? {
-            switch self {
-            case .lens24mm: return "iPhone17pro_24mm.json"
-            case .none: return nil
-            }
-        }
-    }
-    @State private var selectedLens: LensOption = .none
+    // Gyroflow processing options.
+    // searchSizeMs is the window gyroflow-core searches for the optimal
+    // video↔gyro offset. Default 5000ms covers typical manual-sync camera
+    // clock drift (±1-2s realistic, up to ±5s worst case on mirrorless rigs
+    // whose clock was set a few days ago).
+    @State private var gyroflowSearchSize: Double = 5000
 
     var body: some View {
         VStack(spacing: 0) {
@@ -128,16 +118,22 @@ struct ContentView: View {
 
                         Divider()
 
-                        // Time Offset
-                        HStack {
-                            Text("Time Offset (sec):")
-                            TextField("0.0", value: $timeOffset, formatter: NumberFormatter())
-                                .frame(width: 60)
-                                .textFieldStyle(.roundedBorder)
-                            Stepper("", value: $timeOffset, in: -86400...86400, step: 0.5)
-                            Text(timeOffset > 0 ? "(Camera is ahead)" : timeOffset < 0 ? "(Camera is behind)" : "(No offset)")
+                        // Camera Clock Drift
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Camera Clock Drift (sec):")
+                                TextField("0.0", value: $timeOffset, formatter: NumberFormatter())
+                                    .frame(width: 60)
+                                    .textFieldStyle(.roundedBorder)
+                                Stepper("", value: $timeOffset, in: -86400...86400, step: 0.5)
+                                Text(timeOffset > 0 ? "(Camera is ahead)" : timeOffset < 0 ? "(Camera is behind)" : "(No offset)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Text("If auto-sync keeps failing, open one clip in Gyroflow Desktop, measure the drift, then enter it here. Applied to every clip in the batch.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
 
                         Divider()
@@ -145,19 +141,9 @@ struct ContentView: View {
                         // Gyroflow Options
                         HStack {
                             Text("Sync search range (ms):")
-                            TextField("500", value: $gyroflowSearchSize, formatter: NumberFormatter())
+                            TextField("5000", value: $gyroflowSearchSize, formatter: NumberFormatter())
                                 .frame(width: 80)
                                 .textFieldStyle(.roundedBorder)
-                        }
-
-                        HStack {
-                            Text("Lens profile:")
-                            Picker("", selection: $selectedLens) {
-                                ForEach(LensOption.allCases, id: \.self) { option in
-                                    Text(option.rawValue).tag(option)
-                                }
-                            }
-                            .frame(width: 280)
                         }
 
                     }
@@ -389,8 +375,11 @@ struct ContentView: View {
 
         // A. Process Logs
         if !masterSamples.isEmpty {
-            // Slice
-            let slice = masterSamples.filter { $0.timestamp >= start && $0.timestamp <= end }
+            // Slice with a buffer so that small camera-clock drift doesn't trim
+            // away the actual motion window. Overlap between adjacent clips'
+            // slices is harmless — each clip writes an independent .gcsv.
+            let sliceBuffer: Double = 5.0
+            let slice = masterSamples.filter { $0.timestamp >= (start - sliceBuffer) && $0.timestamp <= (end + sliceBuffer) }
 
             if !slice.isEmpty {
                 // Export
@@ -419,7 +408,6 @@ struct ContentView: View {
                 // C. Generate .gyroflow file (bypass Gyroflow Desktop)
                 let gyroflowFileName = video.deletingPathExtension().appendingPathExtension("gyroflow").lastPathComponent
                 let gyroflowExportURL = folder.appendingPathComponent(gyroflowFileName)
-                let lens = resolvedLensProfilePath()
 
                 var syncSucceeded = false
                 do {
@@ -427,7 +415,6 @@ struct ContentView: View {
                         videoPath: video.path,
                         gcsvPath: exportURL.path,
                         outputPath: gyroflowExportURL.path,
-                        lensProfilePath: lens,
                         initialOffsetMs: timeOffset * 1000.0,
                         searchSizeMs: gyroflowSearchSize
                     )
@@ -456,11 +443,24 @@ struct ContentView: View {
                             videoPath: video.path,
                             gcsvPath: exportURL.path,
                             outputPath: gyroflowExportURL.path,
-                            lensProfilePath: lens,
                             offsetMs: timeOffset * 1000.0
                         )
+
+                        // Fallback path doesn't go through the helper subprocess, so
+                        // install_angle injection has to happen here.
+                        injectInstallAngleIntoGyroflow(gcsvPath: exportURL.path, gyroflowPath: gyroflowExportURL.path)
+
                         await MainActor.run {
                             processedFiles.append("Gyroflow (fallback): \(gyroflowFileName)")
+                        }
+
+                        if let headerText = try? GCSVParser.getHeader(url: exportURL),
+                           let angle = GCSVParser.parseInstallAngle(fromHeader: headerText) {
+                            let rStr = String(format: "%+d", Int(angle.roll))
+                            let pStr = String(format: "%+d", Int(angle.pitch))
+                            await MainActor.run {
+                                processedFiles.append("Detected install angle: R\(rStr)° P\(pStr)° (auto-applied, fallback)")
+                            }
                         }
                     } catch {
                         print("Gyroflow timestamp export also failed: \(error)")
@@ -558,28 +558,29 @@ struct ContentView: View {
         }
     }
     
-    // Resolve lens profile path from selected option
-    func resolvedLensProfilePath() -> String? {
-        guard let filename = selectedLens.filename else { return nil }
-        let execURL = URL(fileURLWithPath: CommandLine.arguments[0])
-        let resourcesDir = execURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Resources")
-            .appendingPathComponent("LensProfiles")
-            .appendingPathComponent(filename)
-        if FileManager.default.fileExists(atPath: resourcesDir.path) {
-            return resourcesDir.path
+    // On the fallback (timestamp-only) export path we skip the helper subprocess,
+    // so install_angle from the gcsv note never gets written to gyro_source.rotation.
+    // Patch the .gyroflow JSON in place so Gyroflow opens with pitch/roll pre-applied.
+    func injectInstallAngleIntoGyroflow(gcsvPath: String, gyroflowPath: String) {
+        let gcsvURL = URL(fileURLWithPath: gcsvPath)
+        let headerText = try? GCSVParser.getHeader(url: gcsvURL)
+        let angle = headerText.flatMap { GCSVParser.parseInstallAngle(fromHeader: $0) }
+        do {
+            let gyroflowURL = URL(fileURLWithPath: gyroflowPath)
+            let data = try Data(contentsOf: gyroflowURL)
+            guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            var gyroSource = (json["gyro_source"] as? [String: Any]) ?? [:]
+            if let angle = angle {
+                gyroSource["rotation"] = [angle.pitch, angle.roll, 0.0]
+            }
+            gyroSource["imu_orientation"] = "ZYx"
+            json["gyro_source"] = gyroSource
+            json["offsets"] = [String: Any]()
+            let updated = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+            try updated.write(to: gyroflowURL)
+        } catch {
+            print("Failed to post-process fallback .gyroflow: \(error)")
         }
-        let nextToExe = execURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("LensProfiles")
-            .appendingPathComponent(filename)
-        if FileManager.default.fileExists(atPath: nextToExe.path) {
-            return nextToExe.path
-        }
-        print("WARNING: Built-in lens profile not found: \(filename)")
-        return nil
     }
 
     // Helper to extract date from GyLog_MMDD_HHMMSS

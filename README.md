@@ -1,28 +1,63 @@
 # GyLog Sync Direct (β)
 
-End-to-end macOS utility for processing Sony/iPhone mirrorless footage
-together with Android/iOS gyro logs, producing ready-to-use `.gyroflow`
-projects that can be loaded directly into Gyroflow Desktop or the
-Gyroflow OFX plugin for DaVinci Resolve.
+End-to-end macOS utility for processing mirrorless footage together
+with GyLog gyro logs, producing ready-to-use `.gyroflow` projects that
+can be loaded directly into Gyroflow Desktop or the Gyroflow OFX plugin
+for DaVinci Resolve.
 
 This tool is part of the **GyLog** ecosystem by [Kumo Inc.](https://kumoinc.com).
 
 ## Features
 
-- Slice master GCSV by video `creation_time` + duration
+- Slice master GCSV by video `creation_time` + duration (±5 s buffer
+  absorbs camera/phone clock drift)
 - Trim audio to match video clips
-- Perform optical-flow-based sync against the video (via `gyroflow-core`
-  Rust FFI bridge, crash-isolated in a subprocess)
 - Embed per-frame PTS timestamps into the `.gyroflow` for OFX plugin
   precision
-- Automatic lens profile embedding (iPhone 17 Pro 24mm bundled)
+- Auto-apply `install_angle` from the gcsv note to `gyro_source.rotation`
+  so Gyroflow opens with the mirrorless rig's mount pitch/roll
+  pre-compensated
+- Pre-set `gyro_source.imu_orientation` to `ZYx` — the axis remap
+  Gyroflow Desktop's gcsv Android Motion Logger loader uses internally,
+  so the emitted `.gyroflow` opens with correct axes out of the box
+  (assuming the default USB-C-on-right mount; see
+  [Mount orientation](#mount-orientation) below)
+
+Lens profiles are not bundled — load whichever profile matches your
+mirrorless lens inside Gyroflow Desktop (or DaVinci via the OFX plugin)
+after the `.gyroflow` project is generated.
+
+## Workflow
+
+1. Drop mirrorless clips + master GCSV into the app, hit **Sync**
+2. Each clip gets a paired `.gcsv` (sliced) and `.gyroflow` (project)
+3. Open the `.gyroflow` in Gyroflow Desktop (or DaVinci via OFX)
+4. Load the lens profile for your camera/lens combo
+5. Click **Auto sync** in Gyroflow to establish per-clip sync points
+6. Export stabilized footage
+
+The app does not attempt to embed sync offsets in the `.gyroflow` —
+Gyroflow's own `Auto sync` is more accurate and runs in seconds per clip.
+
+## Mount orientation
+
+The `imu_orientation` defaults to `ZYx`, verified for this mount:
+- Sony Xperia / similar Android phone
+- USB-C socket on the **right**
+- Screen facing **up**
+
+For other mounts (USB-C on left, phone vertical, selfie-mode, etc.),
+change the *IMU orientation* field in Gyroflow Desktop. A future update
+to this tool will auto-detect the axis remap from the gravity vector
+that GyLog v1.0.4+ records during Calibrate Mount.
 
 ## Companion Apps
 
 This tool pairs with the GyLog mobile loggers:
 
+- GyLog for Android — Android IMU logger, the primary companion for
+  mirrorless rigs (Play Store release in progress)
 - [GyLog for iOS](https://apps.apple.com/) — iPhone IMU logger
-- GyLog for Android — Android IMU logger (forthcoming Play Store release)
 
 ## Requirements
 

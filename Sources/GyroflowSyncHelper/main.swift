@@ -11,9 +11,8 @@ import Foundation
 import AVFoundation
 import CGyroflowBridge
 
-// Scan a gcsv file's header for `install_angle:R{roll}_P{pitch}` and return
-// the parsed angle, or nil if not present. Reads only the leading header lines.
-func extractInstallAngle(fromGcsvAt path: String) -> (roll: Double, pitch: Double)? {
+// Read gcsv header only (lines until the first numeric data line).
+func readGcsvHeader(fromGcsvAt path: String) -> String? {
     guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
     var header = ""
     content.enumerateLines { line, stop in
@@ -23,6 +22,13 @@ func extractInstallAngle(fromGcsvAt path: String) -> (roll: Double, pitch: Doubl
             header += line + "\n"
         }
     }
+    return header
+}
+
+// Scan a gcsv file's header for `install_angle:R{roll}_P{pitch}` and return
+// the parsed angle, or nil if not present.
+func extractInstallAngle(fromGcsvAt path: String) -> (roll: Double, pitch: Double)? {
+    guard let header = readGcsvHeader(fromGcsvAt: path) else { return nil }
     let pattern = #"install_angle:R(-?\d+)_P(-?\d+)"#
     guard let regex = try? NSRegularExpression(pattern: pattern),
           let match = regex.firstMatch(in: header, range: NSRange(header.startIndex..., in: header)),
@@ -33,6 +39,19 @@ func extractInstallAngle(fromGcsvAt path: String) -> (roll: Double, pitch: Doubl
           let pitch = Double(header[pRange])
     else { return nil }
     return (roll, pitch)
+}
+
+// Extract the `orientation,XYZ` (or similar 3-letter code) from the gcsv header.
+// Gyroflow uses this as the axis-remap code for the IMU input.
+func extractOrientation(fromGcsvAt path: String) -> String? {
+    guard let header = readGcsvHeader(fromGcsvAt: path) else { return nil }
+    let pattern = #"(?m)^orientation,([A-Za-z]{3,6})\s*$"#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: header, range: NSRange(header.startIndex..., in: header)),
+          match.numberOfRanges >= 2,
+          let r = Range(match.range(at: 1), in: header)
+    else { return nil }
+    return String(header[r])
 }
 
 guard CommandLine.arguments.count >= 4 else {
@@ -148,10 +167,16 @@ func run() async throws {
     check(gf_finish_sync(ctx, &errorPtr), "finish_sync")
     check(gf_export(ctx, outputPath, &errorPtr), "export")
 
-    // Embed per-frame PTS timestamps + install_angle rotation into .gyroflow file
-    // - frame_timestamps_us lets OFX plugins use exact frame timing instead of computing from fps
-    // - gyro_source.rotation carries the Android-side install_angle so Gyroflow opens
-    //   with Pitch/Roll pre-applied (mirrorless rig auto-leveling)
+    // Post-process the .gyroflow JSON:
+    // - Embed per-frame PTS timestamps (OFX plugin needs these for exact frame timing)
+    // - Apply install_angle from gcsv to gyro_source.rotation (Android rig auto-leveling)
+    // - Force imu_orientation to "ZYx" — the axis remap Gyroflow Desktop's gcsv
+    //   Android Motion Logger loader uses internally. Writing the header's raw
+    //   "ZXY" here gave incorrect axes.
+    // - Clear sync offsets so the user runs Auto sync fresh in Gyroflow Desktop.
+    //   Per-clip optical flow done here was 100–300 ms off the true offset and
+    //   showed visible shake on high-motion clips. Fresh Auto sync with the
+    //   user's chosen max-sync-points is more accurate.
     do {
         let gyroflowData = try Data(contentsOf: URL(fileURLWithPath: outputPath))
         if var json = try JSONSerialization.jsonObject(with: gyroflowData) as? [String: Any] {
@@ -163,13 +188,25 @@ func run() async throws {
                 fputs("INFO: Embedded \(framePtsUs.count) frame timestamps\n", stderr)
             }
 
+            var gyroSource = (json["gyro_source"] as? [String: Any]) ?? [:]
+
             if let angle = extractInstallAngle(fromGcsvAt: gcsvPath) {
-                var gyroSource = (json["gyro_source"] as? [String: Any]) ?? [:]
                 gyroSource["rotation"] = [angle.pitch, angle.roll, 0.0]
-                json["gyro_source"] = gyroSource
                 dirty = true
                 fputs("INFO: Applied install_angle R\(Int(angle.roll))_P\(Int(angle.pitch)) -> gyro_source.rotation\n", stderr)
             }
+
+            gyroSource["imu_orientation"] = "ZYx"
+            dirty = true
+            fputs("INFO: Set imu_orientation = ZYx (Android Motion Logger convention)\n", stderr)
+
+            if !gyroSource.isEmpty {
+                json["gyro_source"] = gyroSource
+            }
+
+            json["offsets"] = [String: Any]()
+            dirty = true
+            fputs("INFO: Cleared sync offsets (user should run Auto sync in Gyroflow Desktop)\n", stderr)
 
             if dirty {
                 let updatedData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])

@@ -30,7 +30,7 @@ HELPER_PATH=".build/release/GyroflowSyncHelper"
 echo "Creating $APP_BUNDLE..."
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
-mkdir -p "$APP_BUNDLE/Contents/Resources/LensProfiles"
+mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 # 3. Copy Binaries
 cp "$BINARY_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
@@ -46,13 +46,7 @@ strip -S -x "$APP_BUNDLE/Contents/MacOS/$APP_NAME" 2>/dev/null || true
 [ -f "$APP_BUNDLE/Contents/MacOS/GyroflowSyncHelper" ] && \
     strip -S -x "$APP_BUNDLE/Contents/MacOS/GyroflowSyncHelper" 2>/dev/null || true
 
-# 4. Copy Lens Profiles
-if [ -d "Resources/LensProfiles" ]; then
-    cp Resources/LensProfiles/*.json "$APP_BUNDLE/Contents/Resources/LensProfiles/"
-    echo "Copied lens profiles"
-fi
-
-# 5. Create Info.plist
+# 4. Create Info.plist
 cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
