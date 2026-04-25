@@ -43,6 +43,10 @@ For each video clip in your batch, GyLog Sync Direct:
    matching `.gyroflow` from the same folder and applies stabilization
 4. Adjust FOV / smoothness in OFX as needed and export
 
+> **First time?** See the full step-by-step
+> [**TUTORIAL**](docs/TUTORIAL.md) for mount setup, lens profile
+> creation, rolling-shutter tuning, and DaVinci usage.
+
 ## Advanced Options
 
 - **Camera Clock Drift (sec)** — manual offset if your camera and
