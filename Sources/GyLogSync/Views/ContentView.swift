@@ -768,6 +768,19 @@ struct ContentView: View {
                         }
                     }
                 }
+
+                // Embed video + gcsv bookmarks in Gyroflow's on-disk format
+                // (basE91(zlib(Apple bookmark))). This makes the .gyroflow
+                // openable in Gyroflow Desktop for fine-tuning (RS slider,
+                // sync slider, smoothness, etc) without breaking OFX usage.
+                // Non-fatal: see GyroflowProjectBookmarks for failure handling.
+                if FileManager.default.fileExists(atPath: gyroflowExportURL.path) {
+                    GyroflowProjectBookmarks.embed(
+                        video: video,
+                        gcsv: exportURL,
+                        gyroflowPath: gyroflowExportURL.path
+                    )
+                }
             } else {
                 print("No overlapping data for video: \(video.lastPathComponent)")
                 logCovered = "no overlap"
@@ -826,7 +839,7 @@ struct ContentView: View {
             json["gyro_source"] = gyroSource
             json["offsets"] = [String: Any]()
             let updated = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
-            try updated.write(to: gyroflowURL)
+            try updated.write(to: gyroflowURL, options: .atomic)
         } catch {
             print("Failed to post-process fallback .gyroflow: \(error)")
         }

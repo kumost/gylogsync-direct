@@ -386,17 +386,23 @@ Try:
    and paste the resulting 3-letter code into **IMU orientation
    override** in GyLog Sync Direct.
 
-### "Failed to load the selected file" in Gyroflow Desktop
+### "Failed to load the selected file" or PermissionDenied dialog in Gyroflow Desktop
 
-This is usually a macOS sandbox / TCC permission issue, not a
-malformed file. Gyroflow Desktop needs explicit permission to read
-files on `/Volumes/` (external drives). Either:
-- Open System Settings → Privacy & Security → Full Disk Access and
-  add `Gyroflow.app`.
-- Or copy the clip + gcsv + .gyroflow to `~/Desktop/` first and load
-  from there.
+GyLog Sync Direct v2.1-beta and later embed a macOS file bookmark in
+each `.gyroflow` so Gyroflow Desktop can resolve the source video and
+gcsv even on external volumes. Most files should now open cleanly.
 
-DaVinci Resolve's OFX plugin generally doesn't have this issue.
+You may still see a non-fatal **"Filesystem error … PermissionDenied"**
+dialog when opening a `.gyroflow` in Gyroflow Desktop. This is a
+known Gyroflow Desktop / macOS TCC quirk that fires on load even when
+the project loads successfully. Click **Ok** — the preview, motion
+data, and stabilization sliders will all work normally.
+
+If the file genuinely fails to load (no preview, no motion data),
+open System Settings → Privacy & Security → Full Disk Access and
+add `Gyroflow.app`, then reopen.
+
+DaVinci Resolve's OFX plugin doesn't show or trigger this dialog.
 
 ### "No log overlap" for some clips
 
@@ -474,6 +480,26 @@ expect proportionally longer processing.
 Coming. This text guide is the source material.
 
 ---
+
+## Sharing .gyroflow files publicly
+
+Each `.gyroflow` written by GyLog Sync Direct contains a macOS file
+bookmark for the source video and gcsv (in `videofile_bookmark` and
+`gyro_source.filepath_bookmark`). These bookmarks let Gyroflow Desktop
+reopen the project on the same machine without manually re-locating
+files, and follow the same on-disk format Gyroflow Desktop itself
+writes.
+
+The bookmark blobs include local filesystem context the OS uses to
+resolve the file: the volume UUID, the absolute file path, and your
+macOS user account (via the home directory). If you plan to **share a
+`.gyroflow` file publicly** (forum attachment, GitHub issue, sample
+download, blog post), be aware that this information is included in
+the file. There's no realistic security risk — bookmarks can't be
+"replayed" to access your files from a different machine — but if
+you'd rather not leak your username or folder layout, regenerate the
+project with anonymized paths or strip the bookmark fields before
+sharing.
 
 ## Reporting bugs
 

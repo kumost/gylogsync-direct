@@ -92,9 +92,9 @@ cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.0-beta</string>
+    <string>2.1-beta</string>
     <key>CFBundleVersion</key>
-    <string>200</string>
+    <string>210</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -105,11 +105,22 @@ cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
 </plist>
 EOF
 
+# Helper: force Launch Services to re-read this bundle and restart Finder/Dock
+# so the new icon appears immediately. Without this, Finder/Dock keep showing
+# the generic icon (or a stale cached version) until the next reboot, because
+# macOS caches icons keyed by bundle path and we just overwrote the bundle.
+refresh_icon_cache() {
+    touch "$APP_BUNDLE" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+    /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$APP_BUNDLE" 2>/dev/null || true
+    killall Finder Dock 2>/dev/null || true
+}
+
 # Optional early exit for pre-signing verification.
 # Usage: SKIP_SIGN=1 bash build_app.sh
 if [ "${SKIP_SIGN}" = "1" ]; then
     echo "=== SKIP_SIGN=1: build complete, stopping before signing ==="
     echo "App bundle: $APP_BUNDLE (unsigned, not notarized)"
+    refresh_icon_cache
     open .
     exit 0
 fi
@@ -164,5 +175,9 @@ xcrun stapler staple "$APP_BUNDLE"
 # Clean up
 rm -f "$ZIP_NAME" entitlements.plist
 
-echo "=== Done! $APP_BUNDLE v2.0-beta is ready (signed + notarized). ==="
+# Refresh icon cache so Finder/Dock pick up the new icon without a reboot.
+echo "=== Step 5: Refreshing icon cache ==="
+refresh_icon_cache
+
+echo "=== Done! $APP_BUNDLE v2.1-beta is ready (signed + notarized). ==="
 open .
