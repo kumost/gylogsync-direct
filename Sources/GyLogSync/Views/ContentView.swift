@@ -6,25 +6,22 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import AVFoundation
+import AppKit
 
 struct ContentView: View {
-    @State private var statusMessage = "Drag & Drop a Folder containing .gcsv, Audio, and Videos."
+    @State private var statusMessage = "Drag & Drop a Folder containing .gcsv and Videos."
     @State private var isProcessing = false
     @State private var processedFiles: [String] = []
     @State private var timeOffset: Double = 0.0
-    @State private var showAdvanced = false
+    @State private var showAdvanced = true
 
     // New: Accumulated files for staged processing
     @State private var accumulatedGCSV: [URL] = []
-    @State private var accumulatedAudio: [URL] = []
     @State private var accumulatedVideo: [URL] = []
 
     // Progress tracking
     @State private var currentProgress: Int = 0
     @State private var totalProgress: Int = 0
-
-    // Audio processing option
-    @State private var skipAudioProcessing = false
 
     // Gyroflow processing options.
     // searchSizeMs is the window gyroflow-core searches for the optimal
@@ -32,6 +29,20 @@ struct ContentView: View {
     // clock drift (±1-2s realistic, up to ±5s worst case on mirrorless rigs
     // whose clock was set a few days ago).
     @State private var gyroflowSearchSize: Double = 5000
+
+    // Optional lens profile JSON. If set, embedded as `calibration_data` in
+    // every .gyroflow so DaVinci OFX applies lens correction without a manual
+    // "Load lens profile" step (which is broken in gyroflow-plugins v2.1.1).
+    // One batch = one rig config = one lens, per the "change lens → new log"
+    // workflow rule. Leave empty for the "manual in Gyroflow Desktop" path.
+    @State private var lensProfileURL: URL? = nil
+
+    // Optional IMU orientation override. If set (e.g. "ZYx" for Xperia-on-Sony
+    // mount), forced into every clip's .gyroflow. Leave empty to use the
+    // GCSV header's `orientation,XXX` value. Get the correct value by running
+    // Gyroflow Desktop's Auto-detect IMU orientation once on any clip from
+    // the rig, then type that 3-letter code here for the batch.
+    @State private var imuOrientationOverride: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,7 +85,6 @@ struct ContentView: View {
                             HStack(spacing: 15) {
                                 Label("\(accumulatedGCSV.count)", systemImage: "doc.text")
                                 Label("\(accumulatedVideo.count)", systemImage: "video")
-                                Label("\(accumulatedAudio.count)", systemImage: "waveform")
                             }
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -91,33 +101,20 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(accumulatedGCSV.isEmpty && accumulatedVideo.isEmpty && accumulatedAudio.isEmpty)
+                    .disabled(accumulatedGCSV.isEmpty && accumulatedVideo.isEmpty)
 
                     Button(action: { Task { await executeSync() } }) {
                         Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(accumulatedVideo.isEmpty || (accumulatedGCSV.isEmpty && accumulatedAudio.isEmpty) || isProcessing)
+                    .disabled(accumulatedVideo.isEmpty || accumulatedGCSV.isEmpty || isProcessing)
                 }
                 .padding(.horizontal)
 
                 // Advanced Options
                 DisclosureGroup("Advanced Options", isExpanded: $showAdvanced) {
                     VStack(alignment: .leading, spacing: 10) {
-                        // Skip Audio Toggle
-                        Toggle(isOn: $skipAudioProcessing) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Skip Audio Processing")
-                                    .font(.body)
-                                Text("Only process video logs (faster)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-
-                        Divider()
-
                         // Camera Clock Drift
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -144,6 +141,52 @@ struct ContentView: View {
                             TextField("5000", value: $gyroflowSearchSize, formatter: NumberFormatter())
                                 .frame(width: 80)
                                 .textFieldStyle(.roundedBorder)
+                        }
+
+                        Divider()
+
+                        // IMU orientation override (optional, per-batch)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("IMU orientation:")
+                                TextField("(auto from GCSV header)", text: $imuOrientationOverride)
+                                    .frame(width: 180)
+                                    .textFieldStyle(.roundedBorder)
+                                    .autocorrectionDisabled()
+                                Spacer()
+                            }
+                            Text("Empty = use GCSV header value. For mirrorless rigs, run Gyroflow Desktop's Auto-detect IMU orientation on one clip to find the right value (e.g. ZYx for Xperia-on-Sony), then type it here.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Divider()
+
+                        // Lens profile (optional, per-batch)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Lens profile:")
+                                if let url = lensProfileURL {
+                                    Text(url.lastPathComponent)
+                                        .font(.system(.body, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                } else {
+                                    Text("(none — embed later in Gyroflow Desktop)")
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Button("Choose...") { chooseLensProfile() }
+                                if lensProfileURL != nil {
+                                    Button("Clear") { lensProfileURL = nil }
+                                }
+                            }
+                            Text("Optional. If set, embedded in every .gyroflow so DaVinci OFX applies lens correction directly. One log = one fixed rig = one lens.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
 
                     }
@@ -186,20 +229,7 @@ struct ContentView: View {
                             }
                         }
 
-                        if !accumulatedAudio.isEmpty {
-                            Section(header: Text("Audio (\(accumulatedAudio.count))").font(.caption2)) {
-                                ForEach(accumulatedAudio, id: \.self) { file in
-                                    HStack {
-                                        Image(systemName: "waveform")
-                                        Text(file.lastPathComponent)
-                                            .font(.system(.caption2, design: .monospaced))
-                                        Spacer()
-                                    }
-                                }
-                            }
-                        }
-
-                        if accumulatedGCSV.isEmpty && accumulatedVideo.isEmpty && accumulatedAudio.isEmpty {
+                        if accumulatedGCSV.isEmpty && accumulatedVideo.isEmpty {
                             Text("No files added yet")
                                 .foregroundColor(.secondary)
                                 .font(.caption)
@@ -274,7 +304,6 @@ struct ContentView: View {
         }
 
         let gcsvFiles = allFiles.filter { $0.pathExtension.lowercased() == "gcsv" }
-        let audioFiles = allFiles.filter { ["m4a", "wav", "mp3", "m4b"].contains($0.pathExtension.lowercased()) }
         let videoFiles = allFiles.filter { ["mov", "mp4", "m4v"].contains($0.pathExtension.lowercased()) }
 
         await MainActor.run {
@@ -282,18 +311,26 @@ struct ContentView: View {
             for file in gcsvFiles where !accumulatedGCSV.contains(file) {
                 accumulatedGCSV.append(file)
             }
-            for file in audioFiles where !accumulatedAudio.contains(file) {
-                accumulatedAudio.append(file)
-            }
             for file in videoFiles where !accumulatedVideo.contains(file) {
                 accumulatedVideo.append(file)
             }
         }
     }
 
+    func chooseLensProfile() {
+        let panel = NSOpenPanel()
+        panel.title = "Select lens profile (.json)"
+        panel.allowedContentTypes = [UTType.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        if panel.runModal() == .OK {
+            lensProfileURL = panel.url
+        }
+    }
+
     func clearAccumulatedFiles() {
         accumulatedGCSV.removeAll()
-        accumulatedAudio.removeAll()
         accumulatedVideo.removeAll()
         processedFiles.removeAll()
     }
@@ -317,7 +354,6 @@ struct ContentView: View {
     
     func processAccumulatedFiles() async {
         let gcsvFiles = accumulatedGCSV
-        let audioFiles = skipAudioProcessing ? [] : accumulatedAudio
         let videoFiles = accumulatedVideo
 
         // 2. Parse GCSV (Build Master Timeline)
@@ -335,9 +371,48 @@ struct ContentView: View {
         // Sort by timestamp
         masterSamples.sort { $0.timestamp < $1.timestamp }
 
-        // 3. Process Videos sequentially (gyroflow sync is CPU/GPU intensive)
-        for video in videoFiles {
-            await self.processSingleVideo(video: video, masterSamples: masterSamples, header: header, audioFiles: audioFiles)
+        // 3. Determine batch IMU orientation strategy. Priority:
+        //   - User override (typed in Advanced Options) wins if non-empty —
+        //     skips detection, force that value for all clips (~3s/clip)
+        //   - iPhone standalone (no install_angle in header): force "XYZ"
+        //     (IMU axes match camera axes on same device, detection skipped)
+        //   - Otherwise (Android / iPhone-on-mirrorless): clip 1 = "DETECT"
+        //     (~90s optical-flow detection), clips 2-N reuse the result
+        //
+        // v1.0-beta.11: DETECT re-enabled after bridge fix. Earlier our
+        // orientation guess ran with the sync-wide search window (±5000ms
+        // bias), which let wrong orientations score well via spurious
+        // temporal matches. The bridge now forces a tight ±500ms window
+        // around the already-synced state, matching Desktop's Auto-detect.
+        let masterContainsInstallAngle = GCSVParser.parseInstallAngle(fromHeader: header) != nil
+        let isIphoneStandalone = header.contains("iPhone_Motion_Logger") && !masterContainsInstallAngle
+        let override = imuOrientationOverride.trimmingCharacters(in: .whitespaces)
+        let initialOrientationMode: String? = !override.isEmpty
+            ? override
+            : (isIphoneStandalone ? "XYZ" : "DETECT")
+
+        // 4. Process videos sequentially (sync is CPU intensive). Capture orientation
+        // from the first clip's output so subsequent clips can skip detection.
+        var batchOrientation: String? = nil
+        for (i, video) in videoFiles.enumerated() {
+            // First clip: use "DETECT" or "XYZ" per batch strategy.
+            // Subsequent clips: force the orientation captured from clip 1 (or fall
+            // back to initialOrientationMode if clip 1 didn't return anything).
+            let orientationModeForThisClip: String? = (i == 0)
+                ? initialOrientationMode
+                : (batchOrientation ?? initialOrientationMode)
+            let detected = await self.processSingleVideo(
+                video: video,
+                masterSamples: masterSamples,
+                header: header,
+                imuOrientationMode: orientationModeForThisClip,
+                lensProfilePath: lensProfileURL?.path
+            )
+            // Remember orientation from the first successful clip
+            if batchOrientation == nil, let d = detected {
+                batchOrientation = d
+                fputs("INFO: Batch orientation captured: \(d) (subsequent clips will reuse)\n", stderr)
+            }
         }
 
         await MainActor.run {
@@ -345,7 +420,17 @@ struct ContentView: View {
         }
     }
 
-    func processSingleVideo(video: URL, masterSamples: [GCSVSample], header: String, audioFiles: [URL]) async {
+    /// Process a single video clip: timing fix, GCSV slice, .gyroflow generation.
+    /// Returns the IMU orientation actually written to .gyroflow, so the batch loop
+    /// can reuse it for subsequent clips (skipping the slow ~90s detection pass).
+    /// Returns nil if .gyroflow generation was skipped or failed.
+    func processSingleVideo(
+        video: URL,
+        masterSamples: [GCSVSample],
+        header: String,
+        imuOrientationMode: String? = nil,
+        lensProfilePath: String? = nil
+    ) async -> String? {
         defer {
             Task { @MainActor in
                 currentProgress += 1
@@ -367,8 +452,12 @@ struct ContentView: View {
         }
 
         guard let meta = await VideoProcessor.analyze(url: video) else {
-            return
+            return nil
         }
+
+        // Track the orientation actually written to .gyroflow so the batch loop
+        // can capture and reuse it on subsequent clips.
+        var writtenOrientation: String? = nil
 
         let start = meta.startTime + timeOffset
         let end = meta.endTime + timeOffset
@@ -411,16 +500,30 @@ struct ContentView: View {
 
                 var syncSucceeded = false
                 do {
-                    try await GyroflowProcessor.syncInSubprocess(
+                    // Bias the search center to -5000ms to compensate for the slice
+                    // buffer (GCSV is sliced ±5s around video, so true offset is
+                    // around -5000ms when phone↔camera clocks are synced). This
+                    // puts the iPhone "perfectly synced" case at the center of the
+                    // search range, instead of the edge.
+                    //   center = -5000 + (user's clock-drift override)
+                    //   range  = [-10000, 0] when user override = 0
+                    let sliceBufferOffsetMs: Double = -5000.0
+                    let effectiveInitialOffsetMs = (timeOffset * 1000.0) + sliceBufferOffsetMs
+
+                    let detectedOrientation = try await GyroflowProcessor.syncInSubprocess(
                         videoPath: video.path,
                         gcsvPath: exportURL.path,
                         outputPath: gyroflowExportURL.path,
-                        initialOffsetMs: timeOffset * 1000.0,
-                        searchSizeMs: gyroflowSearchSize
+                        lensProfilePath: lensProfilePath,
+                        initialOffsetMs: effectiveInitialOffsetMs,
+                        searchSizeMs: gyroflowSearchSize,
+                        imuOrientationMode: imuOrientationMode
                     )
+                    writtenOrientation = detectedOrientation
                     syncSucceeded = true
                     await MainActor.run {
-                        processedFiles.append("Gyroflow: \(gyroflowFileName)")
+                        let orientLabel = detectedOrientation.map { " (orientation: \($0))" } ?? ""
+                        processedFiles.append("Gyroflow: \(gyroflowFileName)\(orientLabel)")
                     }
 
                     // Surface install_angle detection (auto-applied by helper into gyro_source.rotation)
@@ -477,87 +580,9 @@ struct ContentView: View {
             }
         }
 
-        // B. Process Audio (skip if disabled)
-        if !audioFiles.isEmpty {
-            for audio in audioFiles {
-                     // Prevent Video splitting itself if it's also detected as audio (mp4)
-                     if audio == video { continue }
-                     
-                     // Get Audio Creation Date (as fallback or reference for Year)
-                     if let resources = try? audio.resourceValues(forKeys: [.creationDateKey]),
-                        let audioFileDate = resources.creationDate {
-                         
-                         var audioStartAbs = audioFileDate.timeIntervalSince1970
-                         
-                         // Try to parse filename for more accurate Start Time (GyLog format)
-                         // Filename: GyLog_MMDD_HHMMSS.m4a  (e.g. GyLog_1226_125935)
-                         let filename = audio.deletingPathExtension().lastPathComponent
-                         if let parsedDate = parseGyLogTimestamp(filename: filename, referenceDate: audioFileDate) {
-                             audioStartAbs = parsedDate.timeIntervalSince1970
-                             print("Parsed Audio Date from Filename: \(parsedDate)")
-                         } else {
-                             // If creation date is End Time (common in audio), we might need to subtract duration?
-                             // But only if we are SURE. For random files, Creation Date is typical Start.
-                             // Let's rely on filename primarily.
-                         }
-
-                         // Audio Absolute Time Range
-                         let audioAsset = AVURLAsset(url: audio)
-                         let audioDuration = CMTimeGetSeconds(audioAsset.duration)
-                         let audioEndAbs = audioStartAbs + audioDuration
-                         
-                         // Video Absolute Time Range (from 'start' and 'end' calc above)
-                         // start = VideoStart + Offset
-                         // end = VideoEnd + Offset
-                         
-                         // Intersection
-                         let overlapStart = max(start, audioStartAbs)
-                         let overlapEnd = min(end, audioEndAbs)
-                         
-                         if overlapEnd > overlapStart {
-                             // Valid overlap
-                             // Convert absolute overlap to relative audio time
-                             let trimStart = overlapStart - audioStartAbs
-                             let trimDuration = overlapEnd - overlapStart
-                             
-                             // Standardize filename: VideoName.m4a (omit source audio name)
-                             let newFileName = video.deletingPathExtension().appendingPathExtension(audio.pathExtension).lastPathComponent
-                             let folder = video.deletingLastPathComponent()
-                             let exportURL = folder.appendingPathComponent(newFileName)
-                             
-                             do {
-                                 // Note: trimDuration might be shorter than video duration if partial overlap
-                                 // Set audio file creation date to match video
-                                 try await AudioTrimmer.trimAudio(sourceURL: audio, destinationURL: exportURL, startTime: trimStart, duration: trimDuration, targetCreationDate: meta.creationDate)
-
-                                 // Add status feedback about partial overlap if significant
-                                 let isPartial = (trimDuration < meta.duration - 0.5)
-                                 let note = isPartial ? " (Partial)" : ""
-                                 
-                                 await MainActor.run {
-                                     processedFiles.append("Audio Export: \(newFileName)\(note)")
-                                 }
-                             } catch {
-                                 print("Audio trim error: \(error)")
-                                 await MainActor.run {
-                                     processedFiles.append("Audio Error: \(error.localizedDescription)")
-                                 }
-                             }
-                         } else {
-                             // No intersection
-                              let vStartStr = Date(timeIntervalSince1970: start).formatted(date: .omitted, time: .standard)
-                              let aStartStr = Date(timeIntervalSince1970: audioStartAbs).formatted(date: .omitted, time: .standard)
-                              
-                              await MainActor.run {
-                                 processedFiles.append("No overlap: Video(\(vStartStr)) vs Audio(\(aStartStr))")
-                                 processedFiles.append("Diff: \(audioStartAbs - start) sec")
-                              }
-                         }
-                }
-            }
-        }
+        return writtenOrientation
     }
-    
+
     // On the fallback (timestamp-only) export path we skip the helper subprocess,
     // so install_angle from the gcsv note never gets written to gyro_source.rotation.
     // Patch the .gyroflow JSON in place so Gyroflow opens with pitch/roll pre-applied.
@@ -583,28 +608,4 @@ struct ContentView: View {
         }
     }
 
-    // Helper to extract date from GyLog_MMDD_HHMMSS
-    func parseGyLogTimestamp(filename: String, referenceDate: Date) -> Date? {
-        // Simple regex or string parsing
-        // Target: GyLog_1226_125935
-        let parts = filename.components(separatedBy: "_")
-        if parts.count >= 3, parts[0] == "GyLog", parts[1].count == 4, parts[2].count == 6 {
-            let mmdd = parts[1]
-            let hhmmss = parts[2]
-            
-            let calendar = Calendar.current
-            let year = calendar.component(.year, from: referenceDate)
-            
-            var components = DateComponents()
-            components.year = year
-            components.month = Int(mmdd.prefix(2))
-            components.day = Int(mmdd.suffix(2))
-            components.hour = Int(hhmmss.prefix(2))
-            components.minute = Int(hhmmss.dropFirst(2).prefix(2))
-            components.second = Int(hhmmss.suffix(2))
-            
-            return calendar.date(from: components)
-        }
-        return nil
-    }
 }

@@ -294,7 +294,16 @@ class GyroflowProcessor {
         progress?(1.0)
     }
 
-    /// Run optical flow sync in a subprocess for crash isolation (SIGSEGV protection)
+    /// Run optical flow sync in a subprocess for crash isolation (SIGSEGV protection).
+    ///
+    /// `imuOrientationMode`:
+    ///   - `"DETECT"` → run gyroflow-core's guess_imu_orientation (~90s extra)
+    ///   - 3-letter axis like `"XYZ"` / `"XyZ"` / `"ZYx"` → skip detection, force this value
+    ///   - `nil` / empty → use heuristic from gcsv id (fast, no detection)
+    ///
+    /// Returns the IMU orientation string actually written to the .gyroflow file.
+    /// Caller should remember this value across a batch and pass it (as the forced
+    /// value) on subsequent clips to avoid the slow detection pass on each clip.
     static func syncInSubprocess(
         videoPath: String,
         gcsvPath: String,
@@ -302,8 +311,9 @@ class GyroflowProcessor {
         lensProfilePath: String? = nil,
         initialOffsetMs: Double = 0,
         searchSizeMs: Double = 500,
+        imuOrientationMode: String? = nil,
         progress: ((Double) -> Void)? = nil
-    ) async throws {
+    ) async throws -> String? {
         progress?(0.05)
 
         // Find the helper binary next to the main executable
@@ -322,12 +332,14 @@ class GyroflowProcessor {
         args.append(lensProfilePath ?? "-")
         args.append(String(initialOffsetMs))
         args.append(String(searchSizeMs))
+        args.append(imuOrientationMode ?? "")  // empty = heuristic
         process.arguments = args
 
-        // Redirect stderr/stdout to /dev/null to prevent pipe buffer deadlock
+        // Capture stdout to read the `OK frames=N orientation=XXX` line; stderr → /dev/null
+        let stdoutPipe = Pipe()
         let devNull = FileHandle(forWritingAtPath: "/dev/null")!
+        process.standardOutput = stdoutPipe
         process.standardError = devNull
-        process.standardOutput = devNull
 
         progress?(0.15)
 
@@ -350,7 +362,24 @@ class GyroflowProcessor {
             throw GyroflowError.bridgeError("Sync failed (exit code \(exitCode))")
         }
 
+        // Parse stdout for orientation
+        let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let outputStr = String(data: outputData, encoding: .utf8) ?? ""
+        var detectedOrientation: String? = nil
+        for line in outputStr.split(separator: "\n") {
+            // Format: "OK frames=215 orientation=XyZ"
+            if line.hasPrefix("OK") {
+                for token in line.split(separator: " ") {
+                    if token.hasPrefix("orientation=") {
+                        let value = String(token.dropFirst("orientation=".count))
+                        if !value.isEmpty { detectedOrientation = value }
+                    }
+                }
+            }
+        }
+
         progress?(1.0)
+        return detectedOrientation
     }
 
     private func checkResult(_ result: Int32, _ errorPtr: inout UnsafeMutablePointer<CChar>?) throws {

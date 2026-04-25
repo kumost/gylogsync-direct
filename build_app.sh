@@ -39,6 +39,14 @@ if [ -f "$HELPER_PATH" ]; then
     echo "Copied GyroflowSyncHelper"
 fi
 
+# 3a. Copy Resources: license texts (GPL compliance) + bundled lens profiles
+cp LICENSE "$APP_BUNDLE/Contents/Resources/LICENSE"
+cp THIRD_PARTY_LICENSES.md "$APP_BUNDLE/Contents/Resources/THIRD_PARTY_LICENSES.md"
+if [ -d LensProfiles ]; then
+    cp -R LensProfiles "$APP_BUNDLE/Contents/Resources/LensProfiles"
+    echo "Copied LensProfiles ($(ls LensProfiles | wc -l | tr -d ' ') files)"
+fi
+
 # Strip debug info and private symbols from both binaries to remove
 # any leftover host paths and reduce binary size.
 echo "Stripping debug symbols for privacy..."
@@ -59,9 +67,9 @@ cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
     <key>CFBundleName</key>
     <string>$APP_NAME</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>1.0-beta.12</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>12</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#1A1A1A"/>
+  <text x="256" y="320" text-anchor="middle"
+        font-family="Outfit, 'Outfit Bold', sans-serif"
+        font-weight="700"
+        font-size="190"
+        letter-spacing="-5"
+        fill="#F5F1EA">GLSD</text>
+</svg>

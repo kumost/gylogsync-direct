@@ -23,6 +23,8 @@ pub struct GFContext {
     computed_offsets: Arc<RwLock<Vec<(f64, f64, f64)>>>,
     /// Original IMU orientation from GCSV (saved before override for autosync)
     original_imu_orientation: Option<String>,
+    /// IMU orientation detected by guess_imu_orientation autosync mode
+    detected_orientation: Arc<RwLock<Option<String>>>,
 }
 
 // ── Helpers ──────────────────────────────────────────
@@ -46,6 +48,7 @@ pub extern "C" fn gf_context_new() -> *mut GFContext {
         cancel_flag: Arc::new(AtomicBool::new(false)),
         computed_offsets: Arc::new(RwLock::new(Vec::new())),
         original_imu_orientation: None,
+        detected_orientation: Arc::new(RwLock::new(None)),
     });
     Box::into_raw(ctx)
 }
@@ -339,6 +342,149 @@ pub extern "C" fn gf_finish_sync(
             set_error("No sync process active", error_out);
             -2
         }
+    }
+}
+
+// ── Step 5c: IMU orientation auto-detection ──────────
+//
+// Runs gyroflow-core's "guess_imu_orientation" AutosyncProcess mode, which
+// iterates through 24 axis-remap candidates and selects the one whose IMU
+// motion best matches the optical-flow-derived camera motion.
+//
+// Usage: call gf_start_orientation_guess() → feed all video frames again via
+// gf_feed_frame() → call gf_finish_orientation_guess() → retrieve detected
+// orientation via gf_get_detected_orientation().
+//
+// Note: requires a separate frame-feed pass after gf_finish_sync() because
+// the AutosyncProcess instance is consumed per-mode.
+
+#[no_mangle]
+pub extern "C" fn gf_start_orientation_guess(
+    ctx: *mut GFContext,
+    _initial_offset_ms: f64,
+    _search_size_ms: f64,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if ctx.is_null() { set_error("Context is null", error_out); return -1; }
+    let ctx = unsafe { &mut *ctx };
+
+    // Verify gyro data
+    {
+        let gyro = ctx.manager.gyro.read();
+        if !gyro.has_motion() {
+            set_error("No gyro motion data loaded", error_out);
+            return -2;
+        }
+    }
+
+    // Reset previous detection result
+    *ctx.detected_orientation.write() = None;
+
+    // Orientation detection runs AFTER gf_finish_sync has applied the computed
+    // offsets to `ctx.manager.gyro`, so the gyro is already time-aligned with
+    // the video. The guess should only search a small residual window around
+    // the already-synced state — a wide search (e.g. the -5000ms bias ± 5000ms
+    // we use for sync) lets wrong orientations win by finding a spurious
+    // temporal alignment far from the true offset. Desktop's "Auto-detect IMU
+    // orientation" behaves this way, hence its reliability vs our earlier runs.
+    //
+    // We intentionally ignore the initial_offset_ms / search_size_ms args from
+    // the caller (kept in the ABI for compat) and hardcode tight values.
+    let sync_params = SyncParams {
+        initial_offset: 0.0,           // already-synced state → search around zero
+        search_size: 500.0,            // ±500ms fine-tune window
+        calc_initial_fast: true,
+        max_sync_points: 3,
+        every_nth_frame: 2,            // skip every other frame for speed
+        time_per_syncpoint: 1500.0,    // shorter window than sync mode
+        of_method: 2,
+        offset_method: 0,
+        ..Default::default()
+    };
+
+    let num_sync_points = sync_params.max_sync_points;
+    let timestamps_fract: Vec<f64> = (0..num_sync_points)
+        .map(|i| (i as f64 + 0.5) / num_sync_points as f64)
+        .collect();
+
+    match AutosyncProcess::from_manager(
+        &ctx.manager,
+        &timestamps_fract,
+        sync_params,
+        "guess_imu_orientation".into(),
+        ctx.cancel_flag.clone(),
+    ) {
+        Ok(mut sync) => {
+            let orient_store = ctx.detected_orientation.clone();
+            sync.on_progress(|progress, detected, total| {
+                log::info!("Orientation guess progress: {:.1}% ({}/{})", progress * 100.0, detected, total);
+            });
+            sync.on_finished(move |result| {
+                match result {
+                    itertools::Either::Right(orientation) => {
+                        log::info!("Detected IMU orientation: {:?}", orientation);
+                        // gyroflow-core returns Option<(String, f64)> where the
+                        // f64 is a confidence/cost score. We only need the string.
+                        if let Some((orient_str, _cost)) = orientation {
+                            *orient_store.write() = Some(orient_str);
+                        }
+                    }
+                    itertools::Either::Left(offsets) => {
+                        // Unexpected for guess_imu_orientation mode but log just in case
+                        log::warn!("guess_imu_orientation returned offsets unexpectedly: {} pts", offsets.len());
+                    }
+                }
+            });
+            ctx.sync = Some(sync);
+            0
+        }
+        Err(_) => {
+            set_error("Failed to create AutosyncProcess (orientation mode)", error_out);
+            -3
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn gf_finish_orientation_guess(
+    ctx: *mut GFContext,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    if ctx.is_null() { set_error("Context is null", error_out); return -1; }
+    let ctx = unsafe { &mut *ctx };
+
+    match ctx.sync.take() {
+        Some(sync) => {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                sync.finished_feeding_frames();
+            }));
+            // Detection result is in ctx.detected_orientation (set by callback)
+            0
+        }
+        None => {
+            set_error("No orientation guess process active", error_out);
+            -2
+        }
+    }
+}
+
+/// Returns the detected IMU orientation as a malloc'd C string, or null if
+/// no orientation was detected. Caller must free via gf_free_string().
+#[no_mangle]
+pub extern "C" fn gf_get_detected_orientation(
+    ctx: *mut GFContext,
+) -> *mut c_char {
+    if ctx.is_null() { return std::ptr::null_mut(); }
+    let ctx = unsafe { &mut *ctx };
+    let detected = ctx.detected_orientation.read();
+    match detected.as_ref() {
+        Some(orient) => {
+            match CString::new(orient.as_str()) {
+                Ok(c) => c.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+        None => std::ptr::null_mut(),
     }
 }
 
