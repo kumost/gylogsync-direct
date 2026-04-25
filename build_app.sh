@@ -47,6 +47,29 @@ if [ -d LensProfiles ]; then
     echo "Copied LensProfiles ($(ls LensProfiles | wc -l | tr -d ' ') files)"
 fi
 
+# 3b. Generate AppIcon.icns from Resources/glsd_mark.svg
+ICON_SOURCE="Resources/glsd_mark.svg"
+if [ -f "$ICON_SOURCE" ]; then
+    if ! command -v rsvg-convert >/dev/null 2>&1; then
+        echo "WARNING: rsvg-convert not found (brew install librsvg). Skipping app icon."
+    else
+        ICONSET_DIR=".build/AppIcon.iconset"
+        rm -rf "$ICONSET_DIR"
+        mkdir -p "$ICONSET_DIR"
+        for spec in 16:icon_16x16 32:icon_16x16@2x 32:icon_32x32 64:icon_32x32@2x \
+                    128:icon_128x128 256:icon_128x128@2x 256:icon_256x256 \
+                    512:icon_256x256@2x 512:icon_512x512 1024:icon_512x512@2x; do
+            size="${spec%%:*}"
+            name="${spec##*:}"
+            rsvg-convert -w "$size" -h "$size" "$ICON_SOURCE" \
+                -o "$ICONSET_DIR/${name}.png"
+        done
+        iconutil -c icns "$ICONSET_DIR" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+        rm -rf "$ICONSET_DIR"
+        echo "Generated AppIcon.icns from $ICON_SOURCE"
+    fi
+fi
+
 # Strip debug info and private symbols from both binaries to remove
 # any leftover host paths and reduce binary size.
 echo "Stripping debug symbols for privacy..."
@@ -66,10 +89,12 @@ cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
     <string>com.kumoinc.gylogsync</string>
     <key>CFBundleName</key>
     <string>$APP_NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0-beta.12</string>
+    <string>2.0-beta</string>
     <key>CFBundleVersion</key>
-    <string>12</string>
+    <string>200</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -130,5 +155,5 @@ xcrun stapler staple "$APP_BUNDLE"
 # Clean up
 rm -f "$ZIP_NAME" entitlements.plist
 
-echo "=== Done! $APP_BUNDLE v1.0-beta is ready (signed + notarized). ==="
+echo "=== Done! $APP_BUNDLE v2.0-beta is ready (signed + notarized). ==="
 open .
