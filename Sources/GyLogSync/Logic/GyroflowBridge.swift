@@ -170,42 +170,62 @@ class GyroflowProcessor {
         }
 
         var frameNo: UInt32 = 0
+        // Reusable de-padded Y-plane buffer. Allocated once based on the first
+        // pixel buffer's dimensions, then reused for every subsequent frame.
+        // Previously this was allocated per-frame (~900KB × 1300+ frames =
+        // multi-GB of churn). Capacity is grown if a later frame is larger.
+        var compactBuf: [UInt8] = []
 
         while let sampleBuffer = trackOutput.copyNextSampleBuffer() {
             let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             let timestampUs = Int64(CMTimeGetSeconds(presentationTime) * 1_000_000.0)
 
-            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-                CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-                defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                frameNo += 1
+                continue
+            }
 
-                let yPlane = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0)!
-                let yWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
-                let yHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
-                let yStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+            let lockResult = CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+            guard lockResult == kCVReturnSuccess else {
+                frameNo += 1
+                continue
+            }
+            defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
-                // Copy Y plane removing stride padding so width == stride.
-                // AVFoundation may pad rows (e.g. stride=1024 for width=1005),
-                // but gyroflow-core expects contiguous pixels with stride == width.
-                let src = yPlane.assumingMemoryBound(to: UInt8.self)
-                var compactBuf = [UInt8](repeating: 0, count: yWidth * yHeight)
+            guard let yPlaneRaw = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
+                frameNo += 1
+                continue
+            }
+            let yWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+            let yHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+            let yStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+
+            // Copy Y plane removing stride padding so width == stride.
+            // AVFoundation may pad rows (e.g. stride=1024 for width=1005),
+            // but gyroflow-core expects contiguous pixels with stride == width.
+            let needed = yWidth * yHeight
+            if compactBuf.count != needed {
+                compactBuf = [UInt8](repeating: 0, count: needed)
+            }
+            let src = yPlaneRaw.assumingMemoryBound(to: UInt8.self)
+            compactBuf.withUnsafeMutableBufferPointer { dst in
+                guard let dstBase = dst.baseAddress else { return }
                 for row in 0..<yHeight {
-                    compactBuf.withUnsafeMutableBufferPointer { dst in
-                        memcpy(dst.baseAddress! + row * yWidth, src + row * yStride, yWidth)
-                    }
+                    memcpy(dstBase + row * yWidth, src + row * yStride, yWidth)
                 }
-                compactBuf.withUnsafeBufferPointer { buf in
-                    gf_feed_frame(
-                        context,
-                        timestampUs,
-                        frameNo,
-                        UInt32(yWidth),
-                        UInt32(yHeight),
-                        UInt32(yWidth),
-                        buf.baseAddress!,
-                        UInt32(yWidth * yHeight)
-                    )
-                }
+            }
+            compactBuf.withUnsafeBufferPointer { buf in
+                guard let bufBase = buf.baseAddress else { return }
+                gf_feed_frame(
+                    context,
+                    timestampUs,
+                    frameNo,
+                    UInt32(yWidth),
+                    UInt32(yHeight),
+                    UInt32(yWidth),
+                    bufBase,
+                    UInt32(yWidth * yHeight)
+                )
             }
 
             frameNo += 1
@@ -366,8 +386,11 @@ class GyroflowProcessor {
             throw GyroflowError.bridgeError("Sync failed (exit code \(exitCode))")
         }
 
-        // Parse stdout for orientation
-        let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        // Parse stdout for orientation. The helper only ever prints a single
+        // short line ("OK frames=N orientation=XXX"), so we cap the read at
+        // 64KB to avoid unbounded memory use if a future helper change spams
+        // stdout. Anything past the cap is discarded.
+        let outputData = stdoutPipe.fileHandleForReading.readData(ofLength: 64 * 1024)
         let outputStr = String(data: outputData, encoding: .utf8) ?? ""
         var detectedOrientation: String? = nil
         for line in outputStr.split(separator: "\n") {

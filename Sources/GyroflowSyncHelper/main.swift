@@ -184,28 +184,46 @@ func run() async throws {
         }
         var frameNo: UInt32 = 0
         var ptsList: [Int64] = []
+        // Reusable de-padded Y-plane buffer (allocated lazily on first frame
+        // and re-grown only when dimensions change). Previously this was
+        // allocated per-frame, causing multi-GB of churn on long clips.
+        var compactBuf: [UInt8] = []
         while let sampleBuffer = trackOutput.copyNextSampleBuffer() {
             let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             let timestampUs = Int64(CMTimeGetSeconds(presentationTime) * 1_000_000.0)
             ptsList.append(timestampUs)
-            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-                CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-                defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-                let yPlane = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0)!
-                let yWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
-                let yHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
-                let yStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
-                let src = yPlane.assumingMemoryBound(to: UInt8.self)
-                var compactBuf = [UInt8](repeating: 0, count: yWidth * yHeight)
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                frameNo += 1
+                continue
+            }
+            let lockResult = CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+            guard lockResult == kCVReturnSuccess else {
+                frameNo += 1
+                continue
+            }
+            defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+            guard let yPlaneRaw = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
+                frameNo += 1
+                continue
+            }
+            let yWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+            let yHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+            let yStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+            let needed = yWidth * yHeight
+            if compactBuf.count != needed {
+                compactBuf = [UInt8](repeating: 0, count: needed)
+            }
+            let src = yPlaneRaw.assumingMemoryBound(to: UInt8.self)
+            compactBuf.withUnsafeMutableBufferPointer { dst in
+                guard let dstBase = dst.baseAddress else { return }
                 for row in 0..<yHeight {
-                    compactBuf.withUnsafeMutableBufferPointer { dst in
-                        memcpy(dst.baseAddress! + row * yWidth, src + row * yStride, yWidth)
-                    }
+                    memcpy(dstBase + row * yWidth, src + row * yStride, yWidth)
                 }
-                compactBuf.withUnsafeBufferPointer { buf in
-                    gf_feed_frame(ctx, timestampUs, frameNo, UInt32(yWidth), UInt32(yHeight), UInt32(yWidth),
-                                 buf.baseAddress!, UInt32(yWidth * yHeight))
-                }
+            }
+            compactBuf.withUnsafeBufferPointer { buf in
+                guard let bufBase = buf.baseAddress else { return }
+                gf_feed_frame(ctx, timestampUs, frameNo, UInt32(yWidth), UInt32(yHeight), UInt32(yWidth),
+                             bufBase, UInt32(yWidth * yHeight))
             }
             frameNo += 1
         }
@@ -218,49 +236,20 @@ func run() async throws {
     check(gf_finish_sync(ctx, &errorPtr), "finish_sync")
 
     // ── Pass 2: IMU orientation handling ──
-    // Three modes per imuOrientationArg:
-    //   "DETECT"      → run gyroflow-core's guess_imu_orientation (~90s/clip)
-    //   3-letter axis → skip detection, force this value (~4s/clip total)
-    //   ""            → skip detection, use heuristic at post-process time
+    // Two modes per imuOrientationArg:
+    //   3-letter axis → force this value into the .gyroflow (e.g. "ZYx")
+    //   ""            → fall through to heuristic at post-process time
+    //                   (iPhone → "XYZ", Android → header value or "ZYx")
+    //
+    // The previous "DETECT" mode (gyroflow-core's guess_imu_orientation) was
+    // removed in v2.0-beta because real-world testing produced wrong values
+    // (e.g. "xYZ" for a USB-C-right Android mount where "ZYx" is correct).
+    // The connector-side selector in the GUI replaces it.
     var detectedOrientation: String? = nil
-    let isExplicitOrientation = !imuOrientationArg.isEmpty &&
-                                imuOrientationArg.uppercased() != "DETECT"
-
-    if isExplicitOrientation {
-        // Forced value — no detection pass needed (batch optimization: clips 2-N
-        // can reuse the orientation detected on clip 1)
+    if !imuOrientationArg.isEmpty {
         detectedOrientation = imuOrientationArg
-        fputs("INFO: Using forced IMU orientation = \(imuOrientationArg) (no detection)\n", stderr)
-    } else if imuOrientationArg.uppercased() == "DETECT" {
-        // Full optical-flow-based detection (slow). Used for clip 1 of a batch
-        // or when user explicitly requests detection.
-        fputs("INFO: Starting IMU orientation guess (pass 2/2)...\n", stderr)
-        let orientStartResult = gf_start_orientation_guess(ctx, initialOffsetMs, searchSizeMs, &errorPtr)
-        if orientStartResult == 0 {
-            do {
-                _ = try feedAllFrames()
-            } catch {
-                fputs("WARNING: Frame feed failed in orientation pass: \(error)\n", stderr)
-            }
-            let finishResult = gf_finish_orientation_guess(ctx, &errorPtr)
-            if finishResult == 0 {
-                if let cstr = gf_get_detected_orientation(ctx) {
-                    detectedOrientation = String(cString: cstr)
-                    gf_free_string(cstr)
-                    fputs("INFO: IMU orientation auto-detected: \(detectedOrientation ?? "none")\n", stderr)
-                } else {
-                    fputs("WARNING: Orientation detection completed but no orientation returned\n", stderr)
-                }
-            } else {
-                if let ptr = errorPtr { gf_free_string(ptr); errorPtr = nil }
-                fputs("WARNING: gf_finish_orientation_guess failed (continuing with heuristic)\n", stderr)
-            }
-        } else {
-            if let ptr = errorPtr { gf_free_string(ptr); errorPtr = nil }
-            fputs("WARNING: gf_start_orientation_guess failed (continuing with heuristic)\n", stderr)
-        }
+        fputs("INFO: Using forced IMU orientation = \(imuOrientationArg)\n", stderr)
     } else {
-        // Empty arg — fall through to heuristic at post-process time
         fputs("INFO: No IMU orientation arg, will use heuristic from gcsv id\n", stderr)
     }
 
@@ -284,7 +273,19 @@ func run() async throws {
     // Removing it lets OFX compute timing the standard way.
     do {
         let gyroflowData = try Data(contentsOf: URL(fileURLWithPath: outputPath))
-        if var json = try JSONSerialization.jsonObject(with: gyroflowData) as? [String: Any] {
+        let parsedJson = try JSONSerialization.jsonObject(with: gyroflowData)
+        guard var json = parsedJson as? [String: Any] else {
+            // gyroflow_core's gf_export should always produce an object root.
+            // If it doesn't, the post-process (calibration_data cleanup,
+            // install_angle injection, IMU orientation, frame_readout_time)
+            // is silently skipped — and the output .gyroflow won't have any
+            // of those critical fields. Make the failure loud so we know.
+            fputs("ERROR: .gyroflow root is not a JSON object (got \(type(of: parsedJson))); post-process skipped — output will be incomplete\n", stderr)
+            throw NSError(domain: "GyroflowSyncHelper", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected .gyroflow root type"])
+        }
+        // Inner block kept to preserve original brace nesting (post-process
+        // body was previously inside `if var json = ...` block).
+        do {
             var dirty = false
 
             var gyroSource = (json["gyro_source"] as? [String: Any]) ?? [:]

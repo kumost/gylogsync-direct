@@ -165,7 +165,16 @@ enum DirectReportWriter {
     }
 
     private static func escape(_ s: String) -> String {
-        if s.contains(",") || s.contains("\"") || s.contains("\n") {
+        // Quote when the string contains any character a CSV parser may treat
+        // as a delimiter, terminator, or whitespace boundary. Carriage return
+        // and tab were missing previously — some parsers split rows on \r and
+        // strip leading/trailing whitespace from unquoted fields.
+        let needsQuoting = s.contains(",")
+            || s.contains("\"")
+            || s.contains("\n")
+            || s.contains("\r")
+            || s.contains("\t")
+        if needsQuoting {
             return "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
         }
         return s

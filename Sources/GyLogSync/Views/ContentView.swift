@@ -456,8 +456,23 @@ struct ContentView: View {
         let masterContainsInstallAngle = GCSVParser.parseInstallAngle(fromHeader: header) != nil
         let isIphoneStandalone = header.contains("iPhone_Motion_Logger") && !masterContainsInstallAngle
         let override = imuOrientationOverride.trimmingCharacters(in: .whitespaces)
+
+        // Validate the override: must be exactly 3 letters from {X,Y,Z,x,y,z}.
+        // Anything else (typo, 4-letter, special chars) is silently ignored
+        // and we fall back to the connector preset, with a UI warning.
+        let isValidOverride: Bool = {
+            guard override.count == 3 else { return false }
+            let allowed: Set<Character> = ["X", "Y", "Z", "x", "y", "z"]
+            return override.allSatisfy { allowed.contains($0) }
+        }()
+        if !override.isEmpty && !isValidOverride {
+            await MainActor.run {
+                processedFiles.append("⚠ IMU orientation override '\(override)' invalid (need 3 chars from XYZ/xyz); using preset")
+            }
+        }
+
         let connectorPreset: String = (connectorSide == "left") ? "zYX" : "ZYx"
-        let initialOrientationMode: String? = !override.isEmpty
+        let initialOrientationMode: String? = isValidOverride
             ? override
             : (isIphoneStandalone ? "XYZ" : connectorPreset)
 
@@ -716,10 +731,20 @@ struct ContentView: View {
                             offsetMs: timeOffset * 1000.0
                         )
 
-                        // Fallback path doesn't go through the helper subprocess, so
-                        // install_angle injection has to happen here.
-                        injectInstallAngleIntoGyroflow(gcsvPath: exportURL.path, gyroflowPath: gyroflowExportURL.path)
-                        writtenOrientation = "ZYx"  // fallback path hardcodes ZYx
+                        // Fallback path skips the helper subprocess (and thus the
+                        // helper's IMU orientation handling), so we have to inject
+                        // install_angle AND the resolved orientation here. Use the
+                        // batch-resolved orientation (from connector preset or user
+                        // override) so the fallback writes the same orientation the
+                        // sync path would have — bug fix for the previous hardcoded
+                        // "ZYx" that ignored the connector-side selector.
+                        let fallbackOrientation = imuOrientationMode ?? "ZYx"
+                        injectInstallAngleIntoGyroflow(
+                            gcsvPath: exportURL.path,
+                            gyroflowPath: gyroflowExportURL.path,
+                            imuOrientation: fallbackOrientation
+                        )
+                        writtenOrientation = fallbackOrientation
                         gyroflowStatus = "fallback OK"
 
                         await MainActor.run {
@@ -777,19 +802,27 @@ struct ContentView: View {
     // On the fallback (timestamp-only) export path we skip the helper subprocess,
     // so install_angle from the gcsv note never gets written to gyro_source.rotation.
     // Patch the .gyroflow JSON in place so Gyroflow opens with pitch/roll pre-applied.
-    func injectInstallAngleIntoGyroflow(gcsvPath: String, gyroflowPath: String) {
+    // The imuOrientation parameter receives the batch-resolved value (connector
+    // preset or user override) so the fallback writes a consistent orientation.
+    func injectInstallAngleIntoGyroflow(gcsvPath: String, gyroflowPath: String, imuOrientation: String) {
         let gcsvURL = URL(fileURLWithPath: gcsvPath)
         let headerText = try? GCSVParser.getHeader(url: gcsvURL)
         let angle = headerText.flatMap { GCSVParser.parseInstallAngle(fromHeader: $0) }
         do {
             let gyroflowURL = URL(fileURLWithPath: gyroflowPath)
             let data = try Data(contentsOf: gyroflowURL)
-            guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            // Explicit warning when JSON root isn't a dict — previously skipped
+            // silently, masking malformed gyroflow_core exports.
+            guard let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                print("WARNING: fallback .gyroflow root is not a JSON object; skipping post-process for \(gyroflowURL.lastPathComponent)")
+                return
+            }
+            var json = parsed
             var gyroSource = (json["gyro_source"] as? [String: Any]) ?? [:]
             if let angle = angle {
                 gyroSource["rotation"] = [angle.pitch, angle.roll, 0.0]
             }
-            gyroSource["imu_orientation"] = "ZYx"
+            gyroSource["imu_orientation"] = imuOrientation
             json["gyro_source"] = gyroSource
             json["offsets"] = [String: Any]()
             let updated = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])

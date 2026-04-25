@@ -75,34 +75,6 @@ int32_t gf_set_offset(
     char** error_out
 );
 
-// Step 5c: IMU orientation auto-detection
-// Run gyroflow-core's "guess_imu_orientation" autosync mode.
-// Workflow:
-//   1. gf_start_orientation_guess()  ← initialize new AutosyncProcess
-//   2. gf_feed_frame() × N            ← feed all video frames again
-//   3. gf_finish_orientation_guess() ← compute best-match orientation
-//   4. gf_get_detected_orientation()  ← retrieve result string (caller frees)
-//
-// Returns 0 on success.
-int32_t gf_start_orientation_guess(
-    GFContext ctx,
-    double initial_offset_ms,
-    double search_size_ms,
-    char** error_out
-);
-
-int32_t gf_finish_orientation_guess(
-    GFContext ctx,
-    char** error_out
-);
-
-// Returns the detected IMU orientation as a malloc'd C string (e.g. "ZYx",
-// "XYZ", "xyZ"), or NULL if no orientation was detected. Caller must free
-// the returned pointer via gf_free_string().
-char* gf_get_detected_orientation(
-    GFContext ctx
-);
-
 // Step 6: Export .gyroflow file
 int32_t gf_export(
     GFContext ctx,

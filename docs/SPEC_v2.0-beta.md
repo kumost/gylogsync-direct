@@ -138,6 +138,14 @@ values without overwriting.
 
 ただし手動入力で十分という結論なら、それ以上の追加はしない。
 
+### 4.5 既知の制約：iPhone-on-mirrorless（未検証）
+
+Connector side セレクタは Sony A7R II + Xperia (Android) 標準マウントで実機検証済み。**iPhone をミラーレスに取り付けた場合（install_angle あり）も同じ ZYx / zYX マッピングを適用する** が、iPhone と Android で IMU 軸の細部が一致するかは未検証。理論上 X=右 / Y=上 / Z=画面外 で一致するはずだが、iOS の `CMMotionManager` が "device coordinate system" と "screen coordinate system" を使い分ける可能性があり、軸が想定通りにならないケースがありうる。
+
+万一 iPhone-on-mirrorless で補正がおかしい場合：
+1. Advanced Options の "IMU orientation override" に Gyroflow Desktop で確認した値を入力
+2. または β フィードバックで報告 → 別プリセットを追加検討
+
 ---
 
 ## 5. 出力仕様
