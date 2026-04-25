@@ -105,6 +105,15 @@ cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
 </plist>
 EOF
 
+# Optional early exit for pre-signing verification.
+# Usage: SKIP_SIGN=1 bash build_app.sh
+if [ "${SKIP_SIGN}" = "1" ]; then
+    echo "=== SKIP_SIGN=1: build complete, stopping before signing ==="
+    echo "App bundle: $APP_BUNDLE (unsigned, not notarized)"
+    open .
+    exit 0
+fi
+
 # 6. Create entitlements file (non-sandboxed, hardened runtime compatible)
 cat <<EOF > entitlements.plist
 <?xml version="1.0" encoding="UTF-8"?>

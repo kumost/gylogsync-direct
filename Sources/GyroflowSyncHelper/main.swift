@@ -89,7 +89,7 @@ func resolveImuOrientation(forGcsvAt path: String) -> String {
 }
 
 guard CommandLine.arguments.count >= 4 else {
-    fputs("Usage: GyroflowSyncHelper <videoPath> <gcsvPath> <outputPath> [lensProfilePath] [initialOffsetMs] [searchSizeMs] [imuOrientation]\n", stderr)
+    fputs("Usage: GyroflowSyncHelper <videoPath> <gcsvPath> <outputPath> [lensProfilePath] [initialOffsetMs] [searchSizeMs] [imuOrientation] [frameReadoutTimeMs]\n", stderr)
     exit(1)
 }
 
@@ -107,6 +107,15 @@ let searchSizeMs = CommandLine.arguments.count > 6 ? Double(CommandLine.argument
 // the result from stdout (`orientation=...`), then passes that string for clips 2-N
 // to skip the slow detection pass since the physical mount is fixed across the batch.
 let imuOrientationArg = CommandLine.arguments.count > 7 ? CommandLine.arguments[7] : ""
+// 8th arg: manual frame_readout_time override in ms. Empty/"-"/non-positive = no
+// override (lens profile value used if available). Non-zero positive = force this
+// value into stabilization.frame_readout_time, overriding any lens profile value.
+// Sourced by user from horshack DB or empirical Gyroflow Desktop measurement.
+let frameReadoutTimeMsArg = CommandLine.arguments.count > 8 ? CommandLine.arguments[8] : ""
+let frameReadoutTimeOverride: Double? = {
+    let parsed = Double(frameReadoutTimeMsArg) ?? 0
+    return parsed > 0 ? parsed : nil
+}()
 
 func run() async throws {
     let asset = AVURLAsset(url: URL(fileURLWithPath: videoPath))
@@ -303,40 +312,75 @@ func run() async throws {
                 json["gyro_source"] = gyroSource
             }
 
-            // Propagate frame_readout_time from the loaded lens profile into
-            // stabilization.frame_readout_time so rolling-shutter correction
-            // actually activates when the .gyroflow is read by OFX or Desktop.
-            // Gyroflow's lens profile JSON stores this either at the top level
-            // ("frame_readout_time") or per-fps in "compatible_settings". Prefer
-            // the per-fps match when the video's fps is listed.
-            if let lensPath = lensProfilePath, lensPath != "-",
-               let lensData = try? Data(contentsOf: URL(fileURLWithPath: lensPath)),
-               let lens = try? JSONSerialization.jsonObject(with: lensData) as? [String: Any] {
-                var rsTime: Double? = nil
-                // Try per-fps match first
+            // Strip calibration_data ONLY when it's truly empty (no lens profile
+            // was loaded). gyroflow-core's exporter writes a calibration_data
+            // block even when nothing was loaded — empty brand/model/distortion
+            // and a zero-sized calib_dimension. Desktop's loader rejects this
+            // empty-but-present block ("Failed to load the selected file").
+            //
+            // CRITICAL: when a lens profile IS loaded, gyroflow-core leaves
+            // brand/model/distortion_model empty in the export but DOES populate
+            // calib_dimension and the fisheye_params camera_matrix. Stripping
+            // based on brand/model alone (earlier bug) would drop a real lens
+            // profile and leave the .gyroflow without any lens correction.
+            //
+            // Detection rule: if calib_dimension has a non-zero width and
+            // height, a real lens profile was loaded — keep calibration_data.
+            // Otherwise it's the empty placeholder — drop it.
+            if let calibration = json["calibration_data"] as? [String: Any] {
+                let calibDim = (calibration["calib_dimension"] as? [String: Any]) ?? [:]
+                let calibW = (calibDim["w"] as? Double) ?? Double((calibDim["w"] as? Int) ?? 0)
+                let calibH = (calibDim["h"] as? Double) ?? Double((calibDim["h"] as? Int) ?? 0)
+                let hasRealLensData = calibW > 0 && calibH > 0
+                if !hasRealLensData {
+                    json.removeValue(forKey: "calibration_data")
+                    dirty = true
+                    fputs("INFO: Dropped empty calibration_data placeholder (no lens profile loaded)\n", stderr)
+                } else {
+                    fputs("INFO: Kept calibration_data (lens profile loaded: \(Int(calibW))x\(Int(calibH)))\n", stderr)
+                }
+            }
+
+            // Propagate frame_readout_time into stabilization.frame_readout_time
+            // so rolling-shutter correction actually activates when the .gyroflow
+            // is read by OFX or Desktop. Priority:
+            //   1. User override (8th CLI arg) — highest priority, overrides everything.
+            //      Used for manual values from horshack DB or Gyroflow Desktop tuning.
+            //   2. Lens profile per-fps match in "compatible_settings".
+            //   3. Lens profile top-level "frame_readout_time".
+            //   4. None → rolling-shutter correction disabled.
+            var rsTime: Double? = nil
+            var rsSource: String = ""
+            if let override = frameReadoutTimeOverride {
+                rsTime = override
+                rsSource = "user override"
+            } else if let lensPath = lensProfilePath, lensPath != "-",
+                      let lensData = try? Data(contentsOf: URL(fileURLWithPath: lensPath)),
+                      let lens = try? JSONSerialization.jsonObject(with: lensData) as? [String: Any] {
                 if let compat = lens["compatible_settings"] as? [[String: Any]] {
                     for entry in compat {
                         if let entryFps = entry["fps"] as? Double,
                            abs(entryFps - fps) < 0.5,
                            let t = entry["frame_readout_time"] as? Double {
                             rsTime = t
+                            rsSource = "lens profile per-fps"
                             break
                         }
                     }
                 }
-                // Fallback to top-level
                 if rsTime == nil, let t = lens["frame_readout_time"] as? Double, t > 0 {
                     rsTime = t
+                    rsSource = "lens profile top-level"
                 }
-                if let t = rsTime {
-                    var stab = (json["stabilization"] as? [String: Any]) ?? [:]
-                    stab["frame_readout_time"] = t
-                    json["stabilization"] = stab
-                    dirty = true
-                    fputs("INFO: Applied frame_readout_time = \(t) from lens profile\n", stderr)
-                } else {
-                    fputs("INFO: Lens profile has no frame_readout_time for fps=\(fps); rolling-shutter correction disabled\n", stderr)
-                }
+            }
+            if let t = rsTime {
+                var stab = (json["stabilization"] as? [String: Any]) ?? [:]
+                stab["frame_readout_time"] = t
+                json["stabilization"] = stab
+                dirty = true
+                fputs("INFO: Applied frame_readout_time = \(t) ms (\(rsSource))\n", stderr)
+            } else {
+                fputs("INFO: No frame_readout_time set; rolling-shutter correction disabled\n", stderr)
             }
 
             // NOTE: sync offsets are intentionally KEPT (not cleared) so that

@@ -208,7 +208,13 @@ pub extern "C" fn gf_start_sync(
         initial_offset: initial_offset_ms,
         search_size: search_size_ms,
         calc_initial_fast: true,
-        max_sync_points: 3,
+        // 5 sync points (was 3): provides enough samples for median-based
+        // outlier rejection in gf_finish_sync to survive up to 2 wildly-off
+        // points (e.g. a single bad correlation at the end of a 60s clip
+        // throwing the entire second half out of sync). Cost is ~1.67x the
+        // sync time per clip, but sync is the slow part anyway and the
+        // robustness gain is worth it.
+        max_sync_points: 5,
         every_nth_frame: 1,
         time_per_syncpoint: 2500.0,
         of_method: 2,      // OpenCV DIS (Dense Inverse Search)
@@ -318,19 +324,68 @@ pub extern "C" fn gf_finish_sync(
                 gyro.apply_transforms();
             }
 
-            // Apply computed offsets to the manager's gyro source
+            // Apply computed offsets to the manager's gyro source, with
+            // median-based outlier rejection AND single-offset enforcement.
+            //
+            // Real-world testing on 60s clips revealed that gyroflow-core's
+            // multi-point sync sometimes produces a wildly off offset at a
+            // later sync point (e.g. -9000ms when the others agreed on
+            // -2500ms). Even with outlier rejection, multi-point offsets
+            // get interpolated across the clip and any small inconsistency
+            // between kept points causes the second half of long clips to
+            // drift visibly. Forcing a single uniform offset (the median of
+            // the kept points) eliminates the drift in exchange for not
+            // tracking real clock drift between phone and camera — but for
+            // typical recordings (clocks set just before shoot, ≤2 minute
+            // clips) actual clock drift is negligible (<1ms).
             let offsets = ctx.computed_offsets.read().clone();
             if offsets.is_empty() {
                 set_error("Sync completed but no offsets were computed (video may have insufficient motion)", error_out);
                 return -3;
             }
 
+            // Outlier rejection: keep only sync points whose offset is within
+            // OUTLIER_THRESHOLD_MS of the initial median. With 5 sync points,
+            // this survives up to 2 outliers.
+            const OUTLIER_THRESHOLD_MS: f64 = 500.0;
+            let mut sorted_offs: Vec<f64> = offsets.iter().map(|(_, off, _)| *off).collect();
+            sorted_offs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let initial_median = sorted_offs[sorted_offs.len() / 2];
+            let kept: Vec<_> = offsets
+                .iter()
+                .filter(|(_, off, _)| (off - initial_median).abs() <= OUTLIER_THRESHOLD_MS)
+                .cloned()
+                .collect();
+            let kept = if kept.is_empty() { offsets.clone() } else { kept };
+
+            // Recompute median from kept points only (more robust)
+            let mut kept_sorted: Vec<f64> = kept.iter().map(|(_, off, _)| *off).collect();
+            kept_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let final_median = kept_sorted[kept_sorted.len() / 2];
+
+            let dropped = offsets.len() - kept.len();
+            eprintln!(
+                "INFO: Sync offsets: {} computed, {} kept, {} dropped (single-offset mode: applying median={:.3}ms uniformly)",
+                offsets.len(),
+                kept.len(),
+                dropped,
+                final_median,
+            );
+            for (ts, off, cost) in &offsets {
+                let kept_marker = if (off - initial_median).abs() <= OUTLIER_THRESHOLD_MS { "kept" } else { "dropped" };
+                eprintln!("INFO:   offset: ts={:.1}ms off={:.3}ms cost={:.4} [{}]", ts, off, cost, kept_marker);
+            }
+
+            // Single-offset application: set the same final_median offset at
+            // every sync point's timestamp. With identical offsets at every
+            // anchor, gyroflow's interpolator yields a constant offset across
+            // the entire clip — no drift between sync points possible.
             {
                 let mut gyro = ctx.manager.gyro.write();
                 gyro.prevent_recompute = true;
-                for (timestamp_ms, offset_ms, _cost) in &offsets {
-                    let new_ts = ((timestamp_ms - offset_ms) * 1000.0) as i64;
-                    gyro.set_offset(new_ts, *offset_ms);
+                for (timestamp_ms, _orig_offset, _cost) in &kept {
+                    let new_ts = ((timestamp_ms - final_median) * 1000.0) as i64;
+                    gyro.set_offset(new_ts, final_median);
                 }
                 gyro.prevent_recompute = false;
                 gyro.adjust_offsets();

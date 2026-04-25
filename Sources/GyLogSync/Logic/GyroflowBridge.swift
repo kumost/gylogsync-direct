@@ -312,6 +312,7 @@ class GyroflowProcessor {
         initialOffsetMs: Double = 0,
         searchSizeMs: Double = 500,
         imuOrientationMode: String? = nil,
+        frameReadoutTimeMs: Double? = nil,
         progress: ((Double) -> Void)? = nil
     ) async throws -> String? {
         progress?(0.05)
@@ -333,13 +334,16 @@ class GyroflowProcessor {
         args.append(String(initialOffsetMs))
         args.append(String(searchSizeMs))
         args.append(imuOrientationMode ?? "")  // empty = heuristic
+        args.append(frameReadoutTimeMs.map { String($0) } ?? "")  // empty = lens profile or none
         process.arguments = args
 
-        // Capture stdout to read the `OK frames=N orientation=XXX` line; stderr → /dev/null
+        // Capture stdout to read the `OK frames=N orientation=XXX` line.
+        // Forward stderr to the parent's stderr so the helper's INFO logs
+        // (sync offsets, install_angle, IMU orientation, etc.) appear when
+        // the app is launched from a terminal — useful for debugging.
         let stdoutPipe = Pipe()
-        let devNull = FileHandle(forWritingAtPath: "/dev/null")!
         process.standardOutput = stdoutPipe
-        process.standardError = devNull
+        process.standardError = FileHandle.standardError
 
         progress?(0.15)
 
