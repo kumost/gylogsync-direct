@@ -10,7 +10,12 @@ import Foundation
 ///
 /// The fix modifies ONLY the stts atom in the MOV container (a few bytes
 /// of timing metadata). Video and audio data are never touched.
-/// The fix is applied in-place. Users should back up their files before processing.
+///
+/// Safety: before any byte is changed, the source file is cloned to
+/// `<file>.MOV.prev` (an O(1) APFS clone on local volumes; a full copy on
+/// SMB/NFS). On successful write+sync+size-verify, the .prev is deleted.
+/// On any failure mid-process the .prev is retained so the user can
+/// restore the original by renaming it back.
 class ProResTimingFixer {
 
     struct FixResult {
@@ -34,6 +39,19 @@ class ProResTimingFixer {
         guard FileManager.default.isWritableFile(atPath: url.path) else {
             return FixResult(filename: filename, totalFrames: 0, anomalousFrames: 0,
                            wasFixed: false, message: "File is not writable")
+        }
+
+        let backupURL = url.appendingPathExtension("prev")
+        var backupCreated = false
+
+        // Build a failure FixResult that mentions the surviving backup so the
+        // user knows where to restore from. Reads `backupCreated` at call
+        // time so it reflects the latest state.
+        func failure(_ message: String, totalFrames: Int = 0, anomalousFrames: Int = 0) -> FixResult {
+            let suffix = backupCreated ? " — backup retained: \(backupURL.lastPathComponent)" : ""
+            return FixResult(filename: filename, totalFrames: totalFrames,
+                             anomalousFrames: anomalousFrames,
+                             wasFixed: false, message: message + suffix)
         }
 
         do {
@@ -64,7 +82,8 @@ class ProResTimingFixer {
                                wasFixed: false, message: "Failed to parse stts")
             }
 
-            // 4. Check if fix is needed
+            // 4. Check if fix is needed (early-return paths skip the backup, so
+            //    no .prev clutter for already-CFR files)
             if sttsInfo.entryCount <= 1 {
                 return FixResult(filename: filename, totalFrames: sttsInfo.totalSamples, anomalousFrames: 0,
                                wasFixed: false, message: "Already CFR")
@@ -84,12 +103,23 @@ class ProResTimingFixer {
                                wasFixed: false, message: "Invalid sample count")
             }
 
-            // 5. Verify file size before modification (safety check)
+            // 5. Verify file size before modification
             let originalFileSize = fileHandle.seekToEndOfFile()
 
-            // 6. Write fix: single stts entry with uniform delta
+            // 6. Create the .prev backup. APFS uses copy-on-write (clonefile)
+            //    so this is O(1) and uses ~0 additional space until the
+            //    original diverges; on SMB/NFS this is a full copy.
+            //    Delete any leftover .prev from a previous run first.
+            let fm = FileManager.default
+            if fm.fileExists(atPath: backupURL.path) {
+                try fm.removeItem(at: backupURL)
+            }
+            try fm.copyItem(at: url, to: backupURL)
+            backupCreated = true
+
+            // 7. Write fix: single stts entry with uniform delta.
             //    Layout: size(4) + 'stts'(4) + version+flags(4) + entry_count(4) + entries(N*8)
-            fileHandle.seek(toFileOffset: UInt64(sttsOffset + 12)) // after size+type+ver+flags
+            try fileHandle.seek(toOffset: UInt64(sttsOffset + 12))
 
             let entryCount: UInt32 = 1
             let sampleCount: UInt32 = UInt32(sttsInfo.totalSamples)
@@ -100,32 +130,42 @@ class ProResTimingFixer {
             data.append(contentsOf: withUnsafeBytes(of: sampleCount.bigEndian) { Array($0) })
             data.append(contentsOf: withUnsafeBytes(of: sampleDelta.bigEndian) { Array($0) })
 
-            fileHandle.write(data)
+            try fileHandle.write(contentsOf: data)
 
             // Zero out remaining entry space (overwrite old entries, no file size change)
             let remainingBytes = (sttsInfo.entryCount - 1) * 8
             if remainingBytes > 0 {
-                fileHandle.write(Data(count: remainingBytes))
+                try fileHandle.write(contentsOf: Data(count: remainingBytes))
             }
 
-            // Flush to disk
-            fileHandle.synchronizeFile()
+            // Flush to disk so the in-memory page cache hits stable storage
+            // before we declare success.
+            try fileHandle.synchronize()
 
-            // 7. Verify file size unchanged (we only overwrote bytes, never appended/truncated)
+            // 8. Verify file size unchanged (we only overwrote bytes, never appended/truncated)
             let newFileSize = fileHandle.seekToEndOfFile()
             if newFileSize != originalFileSize {
-                print("WARNING: File size changed from \(originalFileSize) to \(newFileSize) for \(filename)")
+                // Treat as failure — keep the backup so the user can recover.
+                return failure("File size changed from \(originalFileSize) to \(newFileSize)",
+                               totalFrames: sttsInfo.totalSamples,
+                               anomalousFrames: anomalousFrames)
             }
 
             print("Fixed stts: \(filename) — \(anomalousFrames) of \(sttsInfo.totalSamples) frames corrected to uniform \(sttsInfo.dominantDelta)-tick delta")
+
+            // 9. Success — remove the backup.
+            try? fm.removeItem(at: backupURL)
+            backupCreated = false
 
             return FixResult(filename: filename, totalFrames: sttsInfo.totalSamples,
                            anomalousFrames: anomalousFrames, wasFixed: true,
                            message: "\(anomalousFrames) frames fixed")
 
         } catch {
-            return FixResult(filename: filename, totalFrames: 0, anomalousFrames: 0,
-                           wasFixed: false, message: "Error: \(error.localizedDescription)")
+            // Anything thrown by FileHandle / FileManager lands here. The
+            // .prev (if created) is intentionally retained so the user can
+            // restore by renaming it back over the original.
+            return failure("Error: \(error.localizedDescription)")
         }
     }
 

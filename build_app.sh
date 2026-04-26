@@ -92,9 +92,9 @@ cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.1-beta</string>
+    <string>2.1.1-beta</string>
     <key>CFBundleVersion</key>
-    <string>210</string>
+    <string>211</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -179,5 +179,5 @@ rm -f "$ZIP_NAME" entitlements.plist
 echo "=== Step 5: Refreshing icon cache ==="
 refresh_icon_cache
 
-echo "=== Done! $APP_BUNDLE v2.1-beta is ready (signed + notarized). ==="
+echo "=== Done! $APP_BUNDLE v2.1.1-beta is ready (signed + notarized). ==="
 open .

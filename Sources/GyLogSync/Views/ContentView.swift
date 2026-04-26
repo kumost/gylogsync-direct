@@ -521,7 +521,7 @@ struct ContentView: View {
             generated: Date(),
             sourceGCSV: gcsvFiles.map { $0.lastPathComponent }.joined(separator: ", "),
             device: extractGcsvIdString(from: header),
-            appVersion: "2.0-beta",
+            appVersion: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown",
             imuOrientationBatch: batchOrientation ?? initialOrientationMode ?? "",
             installAngleRoll: Int(installAngle?.roll ?? 0),
             installAnglePitch: Int(installAngle?.pitch ?? 0),
