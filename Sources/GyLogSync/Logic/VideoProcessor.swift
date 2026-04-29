@@ -30,9 +30,13 @@ class VideoProcessor {
             var creationDate: Date?
             var method = ""
 
+            let resources = try? url.resourceValues(forKeys: [.creationDateKey])
+            let fileSystemCreationDate = resources?.creationDate
+
             // 1. PRIORITY: Try asset.creationDate property (works for Sony cameras)
-            if let assetCreationDate = try? await asset.load(.creationDate)?.dateValue {
-                creationDate = assetCreationDate
+            if let creationItem = try await asset.load(.creationDate),
+               let dateValue = try? await creationItem.load(.dateValue) {
+                creationDate = dateValue
                 method = "asset.creationDate"
             }
 
@@ -57,15 +61,29 @@ class VideoProcessor {
                 }
             }
 
-            // 3. Last Resort: File System Attributes
+            // 3. Magic Lantern exports often lose MOV creation_time. If a same-
+            // named original MLV exists nearby, prefer its filesystem timestamp.
+            if creationDate == nil,
+               let mlvDate = pairedMagicLanternMlvCreationDate(for: url, duration: duration) {
+                creationDate = mlvDate
+                method = "paired MLV file creation date"
+            }
+
+            // 4. Last Resort: File System Attributes
             if creationDate == nil {
                 print("⚠️ Metadata date not found for \(url.lastPathComponent). Using file system date.")
-                let resources = try url.resourceValues(forKeys: [.creationDateKey])
-                creationDate = resources.creationDate
+                creationDate = fileSystemCreationDate
                 method = "file system (FALLBACK)"
             }
             
-            let finalDate = creationDate ?? Date()
+            let correction = correctedCameraDateIfNeeded(
+                metadataDate: creationDate,
+                fileSystemCreationDate: fileSystemCreationDate
+            )
+            let finalDate = correction.date ?? creationDate ?? Date()
+            if correction.wasCorrected {
+                method += " + local-time metadata correction"
+            }
             print("Video: \(url.lastPathComponent) -> Date: \(finalDate) [\(method)]")
             
             return VideoFile(url: url, name: url.lastPathComponent, creationDate: finalDate, duration: duration)
@@ -73,6 +91,73 @@ class VideoProcessor {
             print("Error processing video \(url.lastPathComponent): \(error)")
             return nil
         }
+    }
+
+    private static func correctedCameraDateIfNeeded(
+        metadataDate: Date?,
+        fileSystemCreationDate: Date?
+    ) -> (date: Date?, wasCorrected: Bool) {
+        guard let metadataDate, let fileSystemCreationDate else {
+            return (metadataDate, false)
+        }
+
+        // Some cameras write local wall-clock time into QuickTime creation_time,
+        // which AVFoundation exposes as UTC. If subtracting the local GMT offset
+        // makes metadata line up with the filesystem creation date, use it.
+        let offset = TimeInterval(TimeZone.current.secondsFromGMT(for: metadataDate))
+        guard abs(offset) > 0 else {
+            return (metadataDate, false)
+        }
+
+        let corrected = metadataDate.addingTimeInterval(-offset)
+        let originalDelta = abs(metadataDate.timeIntervalSince(fileSystemCreationDate))
+        let correctedDelta = abs(corrected.timeIntervalSince(fileSystemCreationDate))
+        let offsetMagnitude = abs(offset)
+
+        if abs(originalDelta - offsetMagnitude) <= 180,
+           correctedDelta <= 180,
+           correctedDelta + 60 < originalDelta {
+            print("🕒 Corrected local-time camera metadata: \(metadataDate) -> \(corrected) (filesystem: \(fileSystemCreationDate), offset: \(offset))")
+            return (corrected, true)
+        }
+
+        return (metadataDate, false)
+    }
+
+    private static func pairedMagicLanternMlvCreationDate(
+        for url: URL,
+        duration: TimeInterval
+    ) -> Date? {
+        let fileManager = FileManager.default
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let folder = url.deletingLastPathComponent()
+        let parent = folder.deletingLastPathComponent()
+
+        let candidates = [
+            folder.appendingPathComponent(baseName).appendingPathExtension("MLV"),
+            folder.appendingPathComponent(baseName).appendingPathExtension("mlv"),
+            parent.appendingPathComponent(baseName).appendingPathExtension("MLV"),
+            parent.appendingPathComponent(baseName).appendingPathExtension("mlv")
+        ]
+
+        for candidate in candidates where fileManager.fileExists(atPath: candidate.path) {
+            guard let resources = try? candidate.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey]) else {
+                continue
+            }
+
+            if let creationDate = resources.creationDate {
+                print("🎞️ Using paired MLV timestamp for \(url.lastPathComponent): \(candidate.lastPathComponent) -> \(creationDate)")
+                return creationDate
+            }
+
+            if let modifiedDate = resources.contentModificationDate, duration.isFinite, duration > 0 {
+                let estimatedStart = modifiedDate.addingTimeInterval(-duration)
+                print("🎞️ Estimated MLV start from modification date for \(url.lastPathComponent): \(candidate.lastPathComponent) -> \(estimatedStart)")
+                return estimatedStart
+            }
+        }
+
+        return nil
     }
 
     /// Detect lens type from Blackmagic Camera MOV metadata.

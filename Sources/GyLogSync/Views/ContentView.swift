@@ -369,7 +369,11 @@ struct ContentView: View {
         }
 
         let gcsvFiles = allFiles.filter { $0.pathExtension.lowercased() == "gcsv" }
-        let videoFiles = allFiles.filter { ["mov", "mp4", "m4v"].contains($0.pathExtension.lowercased()) }
+        let mlvFiles = allFiles.filter { $0.pathExtension.lowercased() == "mlv" }
+        var videoFiles = allFiles.filter { ["mov", "mp4", "m4v"].contains($0.pathExtension.lowercased()) }
+        for mlv in mlvFiles {
+            videoFiles.append(contentsOf: pairedMovieFiles(for: mlv))
+        }
 
         await MainActor.run {
             // Append new files (avoid duplicates)
@@ -379,6 +383,31 @@ struct ContentView: View {
             for file in videoFiles where !accumulatedVideo.contains(file) {
                 accumulatedVideo.append(file)
             }
+        }
+    }
+
+    func pairedMovieFiles(for mlv: URL) -> [URL] {
+        let fileManager = FileManager.default
+        let baseName = mlv.deletingPathExtension().lastPathComponent
+        let folder = mlv.deletingLastPathComponent()
+        let candidates = [
+            folder.appendingPathComponent(baseName).appendingPathExtension("mov"),
+            folder.appendingPathComponent(baseName).appendingPathExtension("MOV"),
+            folder.appendingPathComponent("mlv").appendingPathComponent(baseName).appendingPathExtension("mov"),
+            folder.appendingPathComponent("mlv").appendingPathComponent(baseName).appendingPathExtension("MOV")
+        ]
+
+        var seen: Set<String> = []
+        return candidates.compactMap { candidate in
+            guard fileManager.fileExists(atPath: candidate.path) else {
+                return nil
+            }
+            let key = candidate.standardizedFileURL.path.lowercased()
+            guard !seen.contains(key) else {
+                return nil
+            }
+            seen.insert(key)
+            return candidate
         }
     }
 

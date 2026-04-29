@@ -23,6 +23,8 @@ swift build -c release \
 # 2. Create App Bundle Structure
 BINARY_NAME="GyLogSync"
 APP_NAME="GyLogSync_Direct"
+APP_VERSION="2.1.5-beta"
+APP_BUILD="215"
 APP_BUNDLE="$APP_NAME.app"
 BINARY_PATH=".build/release/$BINARY_NAME"
 HELPER_PATH=".build/release/GyroflowSyncHelper"
@@ -92,9 +94,9 @@ cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.1.1-beta</string>
+    <string>$APP_VERSION</string>
     <key>CFBundleVersion</key>
-    <string>211</string>
+    <string>$APP_BUILD</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -179,5 +181,5 @@ rm -f "$ZIP_NAME" entitlements.plist
 echo "=== Step 5: Refreshing icon cache ==="
 refresh_icon_cache
 
-echo "=== Done! $APP_BUNDLE v2.1.1-beta is ready (signed + notarized). ==="
+echo "=== Done! $APP_BUNDLE v$APP_VERSION is ready (signed + notarized). ==="
 open .
