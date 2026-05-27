@@ -1,4 +1,4 @@
-# GyLog Sync Direct (v2.1.5-beta)
+# GyLog Sync Direct (v2.1.6-beta)
 
 End-to-end macOS utility for processing mirrorless footage together
 with GyLog gyro logs, producing ready-to-use `.gyroflow` projects that
@@ -30,12 +30,12 @@ For each video clip in your batch, GyLog Sync Direct:
 8. Writes a per-folder CSV processing report so you have a record of
    what was processed with what settings
 
-## Recent changes in v2.1.5-beta
+## Recent changes in v2.1.6-beta
 
 - Fixed camera timestamp handling when QuickTime metadata is interpreted with the wrong timezone.
 - Improved Magic Lantern / Canon EOS M workflows by using paired MLV file timestamps when MOV creation time is missing.
 - Improved folder drops that contain MLV files by automatically finding matching MOV files.
-- Updated the signed and notarized macOS build metadata to v2.1.5-beta.
+- Updated the signed and notarized macOS build metadata to v2.1.6-beta.
 
 ## Workflow
 

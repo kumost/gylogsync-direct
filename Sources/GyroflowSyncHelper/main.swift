@@ -384,6 +384,31 @@ func run() async throws {
                 fputs("INFO: No frame_readout_time set; rolling-shutter correction disabled\n", stderr)
             }
 
+            // Ensure Dynamic Zoom (adaptive zoom) is always enabled.
+            // gyroflow-core may output adaptive_zoom_method = 0 (no zoom
+            // compensation), which makes stabilisation appear invisible in
+            // DaVinci OFX — frames are corrected internally but black borders
+            // are not hidden, so the footage looks un-stabilised to the user.
+            // Setting method = 1 enables adaptive/dynamic zoom, which scales
+            // the frame just enough each moment to hide borders without a
+            // fixed crop. adaptive_zoom_window = 4 s is Gyroflow's standard
+            // default and produces smooth zoom transitions.
+            do {
+                var stab = (json["stabilization"] as? [String: Any]) ?? [:]
+                let prevMethod = stab["adaptive_zoom_method"] as? Int ?? -1
+                stab["adaptive_zoom_method"] = 1
+                if stab["adaptive_zoom_window"] == nil {
+                    stab["adaptive_zoom_window"] = 4.0
+                }
+                json["stabilization"] = stab
+                dirty = true
+                if prevMethod == 1 {
+                    fputs("INFO: Dynamic Zoom already enabled (adaptive_zoom_method = 1); confirmed\n", stderr)
+                } else {
+                    fputs("INFO: Enabled Dynamic Zoom (adaptive_zoom_method \(prevMethod) → 1)\n", stderr)
+                }
+            }
+
             // NOTE: sync offsets are intentionally KEPT (not cleared) so that
             // DaVinci OFX plugin works without user action. The OFX plugin
             // has no Auto sync feature.
