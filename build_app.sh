@@ -23,8 +23,8 @@ swift build -c release \
 # 2. Create App Bundle Structure
 BINARY_NAME="GyLogSync"
 APP_NAME="GyLogSync_Direct"
-APP_VERSION="2.1.5-beta"
-APP_BUILD="215"
+APP_VERSION="2.1.6-beta"
+APP_BUILD="216"
 APP_BUNDLE="$APP_NAME.app"
 BINARY_PATH=".build/release/$BINARY_NAME"
 HELPER_PATH=".build/release/GyroflowSyncHelper"
