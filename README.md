@@ -168,6 +168,12 @@ with:
 - The CSV processing report (`GyLogDirect_*.csv`) generated next to the
   clips
 
+  ## Maintainer workflow
+
+This project is maintained as a creator-led open-source tool.
+
+NagiLab plans to use AI-assisted development tools, including Codex, to improve code review, issue triage, documentation, testing, release preparation, and long-term maintenance.
+
 ---
 
 © 2026 Kumo, Inc.
