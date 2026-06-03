@@ -1,13 +1,16 @@
 # GyLog Sync Direct (v2.1.6-beta)
 
+GyLog Sync Direct is an open-source macOS tool by NagiLab for filmmakers and video creators using external gyro logs with Gyroflow and DaVinci Resolve.
+
+NagiLab builds creator-led tools for video, photography, AI media, and practical creative production workflows.
+
 End-to-end macOS utility for processing mirrorless footage together
 with GyLog gyro logs, producing ready-to-use `.gyroflow` projects that
 load directly into the Gyroflow OFX plugin for DaVinci Resolve — with
 no manual sync, no lens profile loading, and no Gyroflow Desktop step
 required.
 
-This tool is part of the **GyLog** ecosystem by [Kumo, Inc.](https://kumoinc.com)
-(public-facing brand: NagiLab).
+This tool is part of the GyLog ecosystem by NagiLab. Legal and App Store distribution may be handled by Kumo, Inc. where required.
 
 ## What it does
 
